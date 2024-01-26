@@ -1,12 +1,12 @@
 use std::mem::MaybeUninit;
 
 use crate::{
-    arena::{Meta, PortReadGuard, PortWriteGuard, PortAllocGuard},
-    Reader, Writer
-};
-use super::{
-    Tree, Bounds, Node, NodeIndex,
-    SearchResult, Error
+    Reader, Writer,
+    arena::{
+        Meta, MetaMut,
+        PortReadGuard, PortWriteGuard, PortAllocGuard
+    },
+    tree::{Bounds, Color, Error, Node, NodeIndex, SearchResult, Tree}
 };
 
 impl<K: Ord, V> Tree<K, V> {
@@ -33,7 +33,7 @@ pub struct TreeWriteGuard<'a, K: Ord, V>(pub(crate) PortWriteGuard<'a, Node<K, V
 #[derive(Debug)]
 pub struct TreeAllocGuard<'a, K: Ord, V>(pub(crate) PortAllocGuard<'a, Node<K, V>, Bounds>);
 impl<'a, K: Ord, V> TreeAllocGuard<'a, K, V> {
-#[inline]
+    #[inline]
     pub fn insert(&mut self, key: K, value: V) -> bool {
         match Tree::search(self.0.meta().root, &key, &self.0) {
             SearchResult::Here(ptr) => {
@@ -41,24 +41,26 @@ impl<'a, K: Ord, V> TreeAllocGuard<'a, K, V> {
                 return false;
             },
             SearchResult::Empty => {
-                let ptr = Some(self.0.insert(Node::new(key, value)));
+                let ptr = Some(self.0.insert(Node::new(key, value, Color::Black)));
                 let meta = self.0.meta_mut();
                 meta.root = ptr;
                 meta.range = [ptr, ptr]
             },
             SearchResult::LeftOf(parent) => {
-                let ptr = self.0.insert(Node::new(key, value));
-                Tree::insert_at::<0>(ptr, parent, &mut self.0);
+                let ptr = self.0.insert(Node::new(key, value, Color::Red));
+                // SAFETY: parent is a leaf
+                unsafe { Tree::insert_at::<0>(ptr, parent, &mut self.0); }
             },
             SearchResult::RightOf(parent) => {
-                let ptr = self.0.insert(Node::new(key, value));
-                Tree::insert_at::<1>(ptr, parent, &mut self.0);
+                let ptr = self.0.insert(Node::new(key, value, Color::Red));
+                // SAFETY: parent is a leaf
+                unsafe { Tree::insert_at::<1>(ptr, parent, &mut self.0); }
             }
         }
         true
     }
     #[inline]
-    pub(crate) fn insert_node(&mut self, ptr: NodeIndex) -> Result<(), Error> {
+    pub(crate) unsafe fn insert_node(&mut self, ptr: NodeIndex) -> Result<(), Error> {
         // ASSERT: node is not part of another tree
         let key = &self.0[ptr].key;
         match Tree::search(self.0.meta().root, key, &self.0) {
@@ -70,11 +72,11 @@ impl<'a, K: Ord, V> TreeAllocGuard<'a, K, V> {
                 meta.range = [Some(ptr), Some(ptr)];
             },
             SearchResult::LeftOf(parent) =>
-                // SAFETY: search was succesful, so tree cannot be empty
-                Tree::insert_at::<0>(ptr, parent, &mut self.0),
+                // SAFETY: parent is a leaf
+                unsafe { Tree::insert_at::<0>(ptr, parent, &mut self.0) },
             SearchResult::RightOf(parent) =>
-                // SAFETY: search was succesful, so tree cannot be empty
-                Tree::insert_at::<1>(ptr, parent, &mut self.0)
+                // SAFETY: parent is a leaf
+                unsafe { Tree::insert_at::<1>(ptr, parent, &mut self.0) }
         }
         Ok(())
     }
@@ -82,14 +84,16 @@ impl<'a, K: Ord, V> TreeAllocGuard<'a, K, V> {
     pub fn remove(&mut self, key: K) -> Option<V> {
         match Tree::search(self.0.meta().root, &key, &self.0) {
             SearchResult::Here(ptr) => {
-                Tree::remove_at(ptr, &mut self.0);
+                // SAFETY: node is the result of a search in tree
+                unsafe { Tree::remove_at(ptr, &mut self.0); }
                 // SAFETY: node was found, so it exists
                 Some(self.0.remove(ptr).unwrap().value)
             }
             _ => None
         }
     }
-    pub(crate) fn remove_node(&mut self, ptr: NodeIndex) {
+    #[inline(always)]
+    pub(crate) unsafe fn remove_node(&mut self, ptr: NodeIndex) {
         // ASSERT: node is part of this tree
         Tree::remove_at(ptr, &mut self.0);
     }
@@ -161,3 +165,27 @@ macro_rules! impl_Writer {
 }
 impl_Writer!(TreeWriteGuard);
 impl_Writer!(TreeAllocGuard);
+
+macro_rules! impl_Bounds {
+    ( $type:ident ) => {
+        impl<'a, K: Ord, V> $type <'a, K, V> {
+            #[inline(always)]
+            pub fn len(&self) -> usize {
+                self.0.meta().len
+            }
+            #[inline]
+            pub fn min(&self) -> Option<&K> {
+                let index = self.0.meta().range[0]?;
+                Some(&self.0[index].key)
+            }
+            #[inline]
+            pub fn max(&self) -> Option<&K> {
+                let index = self.0.meta().range[1]?;
+                Some(&self.0[index].key)
+            }
+        }
+    };
+}
+impl_Bounds!(TreeReadGuard);
+impl_Bounds!(TreeWriteGuard);
+impl_Bounds!(TreeAllocGuard);

@@ -6,8 +6,10 @@ use std::{
 
 use parking_lot::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
 
-use crate::{Index, Reader, Writer};
-use super::{Arena, Error};
+use crate::{
+    Reader, Writer,
+    arena::{Index, Arena, Error}
+};
 
 pub trait Meta {
     type Type;
@@ -71,10 +73,6 @@ impl<'a, T, M> PortWriteGuard<'a, T, M> {
         // SAFETY: arena is not null
         unsafe { self.arena.get().as_mut().unwrap() }
     }
-    #[inline(always)]
-    pub fn meta_mut(&mut self) -> &mut M {
-        &mut self.port
-    }
 }
 impl<'a, T, M> Writer<Index, Error> for PortWriteGuard<'a, T, M> {
     #[inline]
@@ -107,10 +105,6 @@ impl<'a, T, M> PortAllocGuard<'a, T, M> {
     fn arena_mut(&mut self) -> &mut Arena<T> {
         // SAFETY: arena is not null
         unsafe { self.arena.get().as_mut().unwrap() }
-    }
-    #[inline(always)]
-    pub fn meta_mut(&mut self) -> &mut M {
-        &mut self.port
     }
     #[inline]
     pub fn insert(&mut self, value: T) -> Index {

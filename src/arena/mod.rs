@@ -37,7 +37,7 @@ pub struct Index(usize);
 impl Index {
     #[inline(always)]
     const unsafe fn new_unchecked(value: usize) -> Self {
-        // SAFETY: value != usize::MAX guarantied from caller
+        // ASSERT: value != usize::MAX
         Self(value)
     }
 }
@@ -66,7 +66,6 @@ pub struct Arena<T> {
 impl<T> Arena<T> {
     #[inline]
     fn insert_within_capacity(&mut self, value: T) -> Result<Index, T> {
-        // ASSERT: there is enough capacity available
         self.len += 1;
         match self.free {
             Some(head) => {

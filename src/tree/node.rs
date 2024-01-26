@@ -1,3 +1,5 @@
+use std::ops::Not;
+
 use crate::arena::Index;
 
 pub type NodeIndex = Index;
@@ -8,6 +10,16 @@ pub type NodeRef = Option<NodeIndex>;
 pub enum Color {
     Red = 0,
     Black = 1,
+}
+impl const Not for Color {
+    type Output = Color;
+    #[inline]
+    fn not(self) -> Self::Output {
+        match self {
+            Color::Red => Color::Black,
+            Color::Black => Color::Red
+        }
+    }
 }
 
 // TODO: implement Cumulants as CumulantType trait + NoCumulant/WithCumulant(data, update_callback) structs
@@ -24,10 +36,9 @@ pub struct Node<K, V> {
 
 impl<K, V> Node<K, V> {
     #[inline]
-    pub const fn new(key: K, value: V) -> Self {
+    pub const fn new(key: K, value: V, color: Color) -> Self {
         Self {
-            key, value,
-            color: Color::Black,
+            key, value, color,
             parent: None,
             children: [None, None],
             order: [None, None]

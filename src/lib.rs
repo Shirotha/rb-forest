@@ -1,5 +1,5 @@
-#![feature(trait_alias, derive_const, const_trait_impl)]
-#![feature(vec_push_within_capacity)]
+#![feature(trait_alias, derive_const, const_trait_impl, impl_trait_in_assoc_type)]
+#![feature(vec_push_within_capacity, slice_split_at_unchecked)]
 #![feature(get_many_mut, maybe_uninit_uninit_array, maybe_uninit_array_assume_init)]
 #![feature(try_blocks, try_trait_v2)]
 #![feature(sync_unsafe_cell)]
