@@ -1,5 +1,7 @@
 use std::{
-    marker::PhantomData, mem::ManuallyDrop, ptr::read
+    marker::PhantomData,
+    mem::ManuallyDrop,
+    ptr::read
 };
 
 #[cfg(feature = "sorted-iter")]
@@ -8,16 +10,18 @@ pub use sorted_iter::sorted_pair_iterator::SortedByKey;
 use crate::{
     arena::{Meta, MetaMut, Port, PortAllocGuard},
     tree::{
-        Bounds, Color, Node, NodeRef, Tree, TreeAllocGuard, TreeReadGuard, TreeReader, TreeWriteGuard, TreeWriter
+        Bounds, Color, Node, NodeRef, Tree,
+        TreeReader, TreeWriter,
+        TreeAllocGuard, TreeReadGuard, TreeWriteGuard,
     }
 };
 
 #[derive(Debug)]
 pub struct Iter<'a, K: Ord, V, R: TreeReader<K, V>> {
-    tree: &'a R,
-    front: NodeRef,
-    back: NodeRef,
-    _phantom: PhantomData<(K, V)>
+    pub(crate) tree: &'a R,
+    pub(crate) front: NodeRef,
+    pub(crate) back: NodeRef,
+    pub(crate) _phantom: PhantomData<(K, V)>
 }
 impl<'a, K: Ord + 'a, V: 'a, R: TreeReader<K, V>> Iterator for Iter<'a, K, V, R> {
     type Item = (&'a K, &'a V);
@@ -53,10 +57,10 @@ impl<'a, K: Ord, V, R: TreeReader<K, V>> SortedByKey for Iter<'a, K, V, R> {}
 
 #[derive(Debug)]
 pub struct IterMut<'a, K: Ord, V, W: TreeWriter<K, V>> {
-    tree: &'a mut W,
-    front: NodeRef,
-    back: NodeRef,
-    _phantom: PhantomData<(K, V)>
+    pub(crate) tree: &'a mut W,
+    pub(crate) front: NodeRef,
+    pub(crate) back: NodeRef,
+    pub(crate) _phantom: PhantomData<(K, V)>
 }
 impl<'a, K: Ord + 'a, V: 'a, W: TreeWriter<K, V>> Iterator for IterMut<'a, K, V, W> {
     type Item = (&'a K, &'a mut V);
@@ -218,9 +222,24 @@ impl<K: Ord, V> Tree<K, V> {
     #[inline]
     pub unsafe fn from_sorted_iter_unchecked(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V)>) -> Self {
         // ASSERT: iter is sorted by K
-        fn build_tree<K: Ord, V>(port: &mut PortAllocGuard<Node<K, V>, Bounds>, items: &[(K, V)], parent: NodeRef, color: Color) -> [NodeRef; 3] {
+        fn build_tree<K: Ord, V>(
+            port: &mut PortAllocGuard<Node<K, V>, Bounds>,
+            items: &[(K, V)], parent: NodeRef, color: Color
+        ) -> [NodeRef; 3]
+        {
             let len = items.len();
-            if len == 0 { return [None; 3]; }
+            match len {
+                0 => return [None, None, None],
+                1 => {
+                    // SAFETY: items is not empty
+                    let (key, value) = unsafe { read(&items[0]) };
+                    let mut leaf = Node::new(key, value, color);
+                    leaf.parent = parent;
+                    let this = Some(port.insert(leaf));
+                    return [this, this, this];
+                },
+                _ => ()
+            }
             let pivot = len >> 1;
             // SAFETY: index is smaller then from len
             let (lower, rest) = unsafe { items.split_at_unchecked(pivot) };
@@ -230,14 +249,19 @@ impl<K: Ord, V> Tree<K, V> {
             let (key, value) = unsafe { read(&this[0]) };
             let mut root = Node::new(key, value, color);
             root.parent = parent;
-            let this = port.insert(root);
+            let index = port.insert(root);
+            let this = Some(index);
             let color = !color;
-            let [min, left, prev] = build_tree(port, lower, Some(this), color);
-            let [next, right, max] = build_tree(port, upper, Some(this), color);
-            let node = &mut port[this];
+            let [min, left, prev] = build_tree(port, lower, this, color);
+            let [next, right, max] = build_tree(port, upper, this, color);
+            let node = &mut port[index];
             node.children = [left, right];
             node.order = [prev, next];
-            [min, Some(this), max]
+            [
+                if pivot == 0 { this } else { min },
+                this,
+                if pivot == len - 1 { this } else { max }
+            ]
         }
 
         let items = ManuallyDrop::new(iter.into_iter().collect::<Box<[_]>>());

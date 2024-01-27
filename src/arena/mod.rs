@@ -1,9 +1,5 @@
 mod port;
-pub use port::{
-    Port,
-    PortReadGuard, PortWriteGuard, PortAllocGuard,
-    Meta, MetaMut
-};
+pub use port::*;
 
 use core::slice::GetManyMutError;
 use std::{

@@ -1,10 +1,11 @@
 mod node;
-pub use node::{Node, Color, NodeIndex, NodeRef};
+pub use node::*;
 mod interface;
-pub use interface::{TreeReadGuard, TreeWriteGuard, TreeAllocGuard};
+pub use interface::*;
 mod iter;
-pub use iter::{Iter, IterMut, IntoIter};
-pub mod cursor;
+pub use iter::*;
+mod cursor;
+pub use cursor::*;
 
 use std::{
     cmp::Ordering,
@@ -353,5 +354,16 @@ impl<K: Ord, V> Tree<K, V>
                 return;
             }
         }
+    }
+    #[inline]
+    fn limit<const I: usize>(mut ptr: NodeIndex,
+        tree: &impl TreeReader<K, V>
+    ) -> NodeIndex
+        where [(); 1 - I]:
+    {
+        while let Some(left) = tree[ptr].children[I] {
+            ptr = left;
+        }
+        ptr
     }
 }
