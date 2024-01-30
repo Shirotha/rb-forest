@@ -11,43 +11,16 @@
 #![feature(generic_const_exprs)]
 
 mod arena;
-mod tree;
+pub mod tree;
 
-use std::{
-    convert::Infallible, fmt::Debug, ops::{ControlFlow, FromResidual, Try}
-};
+use std::ops::{ControlFlow, FromResidual, Try};
+
+use sorted_iter::sorted_pair_iterator::SortedByKey;
 
 use crate::{
-    arena::{Arena, Index},
-    tree::{Tree, Node, TreeRef}
+    arena::{Arena, Port},
+    tree::{Tree, Node, Bounds}
 };
-
-pub struct DeferUnwrap<T>(T);
-impl<T, R> FromResidual<R> for DeferUnwrap<T> {
-    #[inline(always)]
-    fn from_residual(_residual: R) -> Self {
-        panic!()
-    }
-}
-impl<T> Try for DeferUnwrap<T> {
-    type Output = T;
-    type Residual = Option<Infallible>;
-    #[inline(always)]
-    fn from_output(output: Self::Output) -> Self {
-        Self(output)
-    }
-    #[inline]
-    fn branch(self) -> ControlFlow<Self::Residual, Self::Output> {
-        ControlFlow::Continue(self.0)
-    }
-}
-macro_rules! unwrap {
-    { $t:ty : $expr:expr } => { {
-        let result: crate::DeferUnwrap< $t > = try { $expr };
-        result.0
-    } }
-}
-pub(crate) use unwrap;
 
 pub struct DeferDiscard(bool);
 impl<R> FromResidual<R> for DeferDiscard {
@@ -90,21 +63,49 @@ macro_rules! option {
 #[allow(unused_imports)]
 pub(crate) use option;
 
-trait Reader<T> {
+pub trait Reader<T> {
     type Item;
     fn get(&self, index: T) -> Option<&Self::Item>;
     fn contains(&self, index: T) -> bool;
 }
 
-trait Writer<T, E>: Reader<T> {
+pub trait Writer<T, E>: Reader<T> {
     fn get_mut(&mut self, index: T) -> Option<&mut Self::Item>;
     fn get_many_mut<const N: usize>(&mut self, indices: [T; N]) -> Result<[&mut Self::Item; N], E>;
 }
 
 #[derive(Debug)]
-pub struct Forest<K, V> {
-    node_arena: Arena<Node<K, V>>,
-    tree_arena: Arena<Tree<K, V>>,
-    front: TreeRef,
-    back: TreeRef
+pub struct OwnedForest<K, V> {
+    free_port: Port<Node<K, V>, Bounds>,
+}
+impl<K: Ord, V> OwnedForest<K, V> {
+    #[inline]
+    pub fn new() -> Self {
+        Self { free_port: Arena::new().into_port(Bounds::default()) }
+    }
+    #[inline]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { free_port: Arena::with_capacity(capacity).into_port(Bounds::default()) }
+    }
+    #[inline]
+    pub fn insert(&self) -> Tree<K, V> {
+        Tree::new(self.free_port.split_with_meta(Bounds::default()))
+    }
+    /// # Safety
+    /// It is assumed that the given iterator is sorted by K in incresing order.
+    ///
+    /// For a safe version of this function use the 'sorted-iter' feature.
+    #[inline]
+    pub unsafe fn insert_sorted_iter_unchecked(&self, iter: impl IntoIterator<Item = (K, V)>) -> Tree<K, V> {
+        Tree::from_sorted_iter_unchecked(self.free_port.split_with_meta(Bounds::default()), iter)
+    }
+    #[cfg(feature = "sorted-iter")]
+    #[inline]
+    pub fn insert_sorted_iter(&self, iter: impl IntoIterator<Item = (K, V)> + SortedByKey) -> Tree<K, V> {
+        Tree::from_sorted_iter(self.free_port.split_with_meta(Bounds::default()), iter)
+    }
+}
+impl<K: Ord, V> Default for OwnedForest<K, V> {
+    #[inline(always)]
+    fn default() -> Self { Self::new() }
 }

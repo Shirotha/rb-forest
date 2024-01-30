@@ -1,4 +1,5 @@
 mod port;
+#[allow(unused_imports)]
 pub use port::*;
 
 use core::slice::GetManyMutError;
@@ -29,11 +30,12 @@ impl<const N: usize> const From<GetManyMutError<N>> for Error {
 #[cfg_attr(target_pointer_width = "64", rustc_layout_scalar_valid_range_end(0xffffffff_fffffffe))]
 #[cfg_attr(target_pointer_width = "32", rustc_layout_scalar_valid_range_end(0xfffffffe))]
 #[rustc_nonnull_optimization_guaranteed]
-pub struct Index(usize);
+pub(crate) struct Index(usize);
 impl Index {
+    /// # Safety
+    /// The given value cannot be equal to `usize::MAX`.
     #[inline(always)]
     const unsafe fn new_unchecked(value: usize) -> Self {
-        // ASSERT: value != usize::MAX
         Self(value)
     }
 }
@@ -54,12 +56,24 @@ impl<T> Entry<T> {
 
 // ASSERT: user is responsible for dangling references
 #[derive(Debug)]
-pub struct Arena<T> {
+pub(crate) struct Arena<T> {
     items: Vec<Entry<T>>,
     free: Ref,
     len: usize
 }
 impl<T> Arena<T> {
+    #[inline]
+    pub const fn new() -> Self {
+        Self { items: Vec::new(), free: None, len: 0 }
+    }
+    #[inline]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { items: Vec::with_capacity(capacity), free: None, len: 0 }
+    }
+    #[inline]
+    pub fn into_port<M>(self, meta: M) -> Port<T, M> {
+        Port::new(self, meta)
+    }
     #[inline]
     fn insert_within_capacity(&mut self, value: T) -> Result<Index, T> {
         self.len += 1;

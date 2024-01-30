@@ -2,8 +2,8 @@ use std::ops::Not;
 
 use crate::arena::Index;
 
-pub type NodeIndex = Index;
-pub type NodeRef = Option<NodeIndex>;
+pub(crate) type NodeIndex = Index;
+pub(crate) type NodeRef = Option<NodeIndex>;
 
 #[repr(u8)]
 #[derive_const(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,13 +25,13 @@ impl const Not for Color {
 // TODO: implement Cumulants as CumulantType trait + NoCumulant/WithCumulant(data, update_callback) structs
 
 #[derive(Debug)]
-pub struct Node<K, V> {
-    pub(crate) key: K,
-    pub(crate) value: V,
-    pub(crate) color: Color,
-    pub(crate) parent: NodeRef,
-    pub(crate) children: [NodeRef; 2],
-    pub(crate) order: [NodeRef; 2]
+pub(crate) struct Node<K, V> {
+    pub key: K,
+    pub value: V,
+    pub color: Color,
+    pub parent: NodeRef,
+    pub children: [NodeRef; 2],
+    pub order: [NodeRef; 2]
 }
 
 impl<K, V> Node<K, V> {
@@ -43,10 +43,6 @@ impl<K, V> Node<K, V> {
             children: [None, None],
             order: [None, None]
         }
-    }
-    #[inline(always)]
-    pub const fn is_root(&self) -> bool {
-        self.parent.is_none()
     }
     #[inline(always)]
     pub const fn is_black(&self) -> bool {

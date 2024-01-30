@@ -154,6 +154,15 @@ macro_rules! impl_Iter {
                 let [front, back] = self.0.meta().range;
                 Iter { tree: &self.0, front, back, _phantom: PhantomData }
             }
+            #[inline]
+            pub fn iter_range<const LI: bool, const RI: bool>(&self, min: &K, max: &K) -> Iter<K, V, impl TreeReader<K, V> + 'a> {
+                let meta = self.0.meta();
+                let front = Tree::closest::<0, LI>(meta.root, min, &self.0)
+                    .or_else( || meta.range[0] );
+                let back = Tree::closest::<1, RI>(meta.root, max, &self.0)
+                    .or_else( || meta.range[1] );
+                Iter { tree: &self.0, front, back, _phantom: PhantomData }
+            }
         }
     };
 }
@@ -167,6 +176,15 @@ macro_rules! impl_IterMut {
             #[inline]
             pub fn iter_mut(&mut self) -> IterMut<K, V, impl TreeWriter<K, V> + 'a> {
                 let [front, back] = self.0.meta().range;
+                IterMut { tree: &mut self.0, front, back, _phantom: PhantomData }
+            }
+            #[inline]
+            pub fn iter_range_mut<const LI: bool, const RI: bool>(&mut self, min: &K, max: &K) -> IterMut<K, V, impl TreeWriter<K, V> + 'a> {
+                let meta = self.0.meta();
+                let front = Tree::closest::<0, LI>(meta.root, min, &self.0)
+                    .or_else( || meta.range[0] );
+                let back = Tree::closest::<1, RI>(meta.root, max, &self.0)
+                    .or_else( || meta.range[1] );
                 IterMut { tree: &mut self.0, front, back, _phantom: PhantomData }
             }
         }
@@ -220,8 +238,11 @@ impl<K: Ord, V> IntoIterator for Tree<K, V> {
 
 impl<K: Ord, V> Tree<K, V> {
     #[inline]
-    pub unsafe fn from_sorted_iter_unchecked(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V)>) -> Self {
-        // ASSERT: iter is sorted by K
+    /// # Safety
+    /// It is assumed that the given iterator is sorted by K in incresing order.
+    ///
+    /// For a safe version of this function use the 'sorted-iter' feature.
+    pub(crate) unsafe fn from_sorted_iter_unchecked(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V)>) -> Self {
         fn build_tree<K: Ord, V>(
             port: &mut PortAllocGuard<Node<K, V>, Bounds>,
             items: &[(K, V)], parent: NodeRef, color: Color
@@ -282,7 +303,7 @@ impl<K: Ord, V> Tree<K, V> {
     }
     #[cfg(feature = "sorted-iter")]
     #[inline(always)]
-    pub fn from_sorted_iter(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V)> + SortedByKey) -> Self {
+    pub(crate) fn from_sorted_iter(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V)> + SortedByKey) -> Self {
         // SAFETY: guarantied by trait
         unsafe { Self::from_sorted_iter_unchecked(port, iter) }
     }

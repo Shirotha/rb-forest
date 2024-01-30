@@ -1,4 +1,7 @@
-use std::mem::MaybeUninit;
+use std::{
+    ops::RangeInclusive,
+    mem::MaybeUninit
+};
 
 use crate::{
     Reader, Writer,
@@ -34,6 +37,10 @@ pub struct TreeWriteGuard<'a, K: Ord, V>(pub(crate) PortWriteGuard<'a, Node<K, V
 pub struct TreeAllocGuard<'a, K: Ord, V>(pub(crate) PortAllocGuard<'a, Node<K, V>, Bounds>);
 impl<'a, K: Ord, V> TreeAllocGuard<'a, K, V> {
     #[inline]
+    pub fn downgrade(self) -> TreeWriteGuard<'a, K, V> {
+        TreeWriteGuard(self.0.downgrade())
+    }
+    #[inline]
     pub fn insert(&mut self, key: K, value: V) -> bool {
         match Tree::search(self.0.meta().root, &key, &self.0) {
             SearchResult::Here(ptr) => {
@@ -59,9 +66,11 @@ impl<'a, K: Ord, V> TreeAllocGuard<'a, K, V> {
         }
         true
     }
+    /// # Safety
+    /// Calling this function implicitly moves the node pointer into this tree,
+    /// using the same pointer in a different tree is undefined behaviour.
     #[inline]
     pub(crate) unsafe fn insert_node(&mut self, ptr: NodeIndex) -> Result<(), Error> {
-        // ASSERT: node is not part of another tree
         let key = &self.0[ptr].key;
         match Tree::search(self.0.meta().root, key, &self.0) {
             SearchResult::Here(_) => return Err(Error::DuplicateKey),
@@ -73,10 +82,10 @@ impl<'a, K: Ord, V> TreeAllocGuard<'a, K, V> {
             },
             SearchResult::LeftOf(parent) =>
                 // SAFETY: parent is a leaf
-                unsafe { Tree::insert_at::<0>(ptr, parent, &mut self.0) },
+                Tree::insert_at::<0>(ptr, parent, &mut self.0),
             SearchResult::RightOf(parent) =>
                 // SAFETY: parent is a leaf
-                unsafe { Tree::insert_at::<1>(ptr, parent, &mut self.0) }
+                Tree::insert_at::<1>(ptr, parent, &mut self.0)
         }
         Ok(())
     }
@@ -92,9 +101,12 @@ impl<'a, K: Ord, V> TreeAllocGuard<'a, K, V> {
             _ => None
         }
     }
+    /// # Safety
+    /// The node pointer has to point to a node in this tree.
+    /// This will also implicitly move the node pointer out of this tree,
+    /// using the pointer for anything else than inserting it into a different tree is undefined behaviour.
     #[inline(always)]
     pub(crate) unsafe fn remove_node(&mut self, ptr: NodeIndex) {
-        // ASSERT: node is part of this tree
         Tree::remove_at(ptr, &mut self.0);
     }
     #[inline]
@@ -173,6 +185,10 @@ macro_rules! impl_Bounds {
             pub fn len(&self) -> usize {
                 self.0.meta().len
             }
+            #[inline(always)]
+            pub fn is_empty(&self) -> bool {
+                self.0.meta().len == 0
+            }
             #[inline]
             pub fn min(&self) -> Option<&K> {
                 let index = self.0.meta().range[0]?;
@@ -182,6 +198,11 @@ macro_rules! impl_Bounds {
             pub fn max(&self) -> Option<&K> {
                 let index = self.0.meta().range[1]?;
                 Some(&self.0[index].key)
+            }
+            #[inline]
+            pub fn range(&self) -> Option<RangeInclusive<&K>> {
+                let [Some(min), Some(max)] = self.0.meta().range else { return None };
+                Some((&self.0[min].key)..=(&self.0[max].key))
             }
         }
     };

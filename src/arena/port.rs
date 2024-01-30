@@ -11,17 +11,25 @@ use crate::{
     arena::{Index, Arena, Error}
 };
 
-pub trait Meta {
+pub(crate) trait Meta {
     type Type;
     fn meta(&self) -> &Self::Type;
 }
-pub trait MetaMut: Meta {
+pub(crate) trait MetaMut: Meta {
     fn meta_mut(&mut self) -> &mut Self::Type;
 }
 
 #[derive(Debug)]
-pub struct Port<T, M = ()>(Arc<RwLock<SyncUnsafeCell<Arena<T>>>>, RwLock<M>);
+pub(crate) struct Port<T, M = ()>(Arc<RwLock<SyncUnsafeCell<Arena<T>>>>, RwLock<M>);
 impl<T, M> Port<T, M> {
+    #[inline]
+    pub(crate) fn new(arena: Arena<T>, meta: M) -> Self {
+        Self(Arc::new(RwLock::new(SyncUnsafeCell::new(arena))), RwLock::new(meta))
+    }
+    #[inline]
+    pub(crate) fn split_with_meta(&self, meta: M) -> Self {
+        Self(self.0.clone(), RwLock::new(meta))
+    }
     #[inline]
     pub fn read(&self) -> PortReadGuard<T, M> {
         let arena = self.0.read();
@@ -45,7 +53,7 @@ impl<T, M> Port<T, M> {
 }
 
 #[derive(Debug)]
-pub struct PortReadGuard<'a, T, M> {
+pub(crate) struct PortReadGuard<'a, T, M> {
     arena: RwLockReadGuard<'a, SyncUnsafeCell<Arena<T>>>,
     port: RwLockReadGuard<'a, M>
 }
@@ -58,7 +66,7 @@ impl<'a, T, M> PortReadGuard<'a, T, M> {
 }
 
 #[derive(Debug)]
-pub struct PortWriteGuard<'a, T, M> {
+pub(crate) struct PortWriteGuard<'a, T, M> {
     arena: RwLockReadGuard<'a, SyncUnsafeCell<Arena<T>>>,
     port: RwLockWriteGuard<'a, M>
 }
@@ -86,7 +94,7 @@ impl<'a, T, M> Writer<Index, Error> for PortWriteGuard<'a, T, M> {
 }
 
 #[derive(Debug)]
-pub struct PortAllocGuard<'a, T, M> {
+pub(crate) struct PortAllocGuard<'a, T, M> {
     arena: RwLockUpgradableReadGuard<'a, SyncUnsafeCell<Arena<T>>>,
     port: RwLockWriteGuard<'a, M>
 }

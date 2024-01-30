@@ -15,13 +15,11 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    unwrap, discard,
+    discard,
     Reader, Writer,
     arena::{Port, Index, Meta, MetaMut, Error as ArenaError},
 };
 
-pub type TreeIndex = Index;
-pub type TreeRef = Option<TreeIndex>;
 pub trait TreeReader<K, V> = Reader<Index, Item = Node<K, V>> + IndexRO<NodeIndex, Output = Node<K, V>> + Meta<Type = Bounds>;
 pub trait TreeWriter<K, V> = Writer<Index, ArenaError, Item = Node<K, V>> + IndexMut<NodeIndex, Output = Node<K, V>> + MetaMut<Type = Bounds>;
 
@@ -44,7 +42,7 @@ enum SearchResult<T> {
     RightOf(T)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Bounds {
     root: NodeRef,
     range: [NodeRef; 2],
@@ -57,11 +55,18 @@ pub struct Tree<K, V> {
 }
 
 impl<K, V> Tree<K, V> {
+    #[inline(always)]
+    pub(crate) fn new(port: Port<Node<K, V>, Bounds>) -> Self {
+        Self { port }
+    }
+    /// # Safety
+    /// the node at `ptr->children[1 - I]` cannot be None.
+    ///
+    /// The node pointer has to be owned by tree.
     #[inline]
     unsafe fn rotate<const I: usize>(ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
     ) where [(); 1 - I]: {
-        // ASSERT: node has a non-null {1 - I} child
         let node = &tree[ptr];
         let parent = node.parent;
         // SAFETY: guarantied by caller
@@ -113,11 +118,14 @@ impl<K: Ord, V> Tree<K, V>
             }
         } else { SearchResult::Empty }
     }
+    /// # Safety
+    /// The node at `ptr->children[I]` cannot be None.
+    ///
+    /// The node pointers have to be owned by tree.
     #[inline]
     unsafe fn insert_at<const I: usize>(ptr: NodeIndex, parent: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
     ) where [(); 1 - I]: {
-        // ASSERT: child I is null
         let mut order = [None, None];
         order[I] = tree[parent].order[I];
         order[1 - I] = Some(parent);
@@ -135,11 +143,12 @@ impl<K: Ord, V> Tree<K, V>
             Self::fix_insert(ptr, tree)
         }
     }
+    /// # Safety
+    /// The node at `ptr->parent->parent` cannot be None.
     #[inline]
     unsafe fn fix_insert(mut ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
     ) {
-        // ASSERT: node has a non-null grand-parent
         #[inline]
         unsafe fn helper<const I: usize, const J: usize, K, V>(mut ptr: NodeIndex, parent: NodeIndex, grandparent: NodeIndex,
             tree: &mut impl TreeWriter<K, V>
@@ -205,11 +214,13 @@ impl<K: Ord, V> Tree<K, V>
         let root = tree.meta().root.unwrap();
         tree[root].color = Color::Black
     }
+    /// # Safety
+    ///
+    /// The node pointer has to be owned by tree.
     #[inline]
     unsafe fn remove_at(ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
     ) {
-        // ASSERT: root is the root of node
         let node = &tree[ptr];
         let mut color = node.color;
         let [prev, next] = node.order;
@@ -261,11 +272,14 @@ impl<K: Ord, V> Tree<K, V>
             Self::fix_remove(fix, tree)
         }
     }
+    /// # Safety
+    /// The child pointer has to be a child node of the given node.
+    ///
+    /// The node pointers hve to be owned by tree.
     #[inline]
     unsafe fn transplant(ptr: NodeIndex, child: NodeRef,
         tree: &mut impl TreeWriter<K, V>
     ) {
-        // ASSERT node is part of tree and child is child of node
         let parent = tree[ptr].parent;
         discard! {
             tree[child?].parent = parent
@@ -281,11 +295,14 @@ impl<K: Ord, V> Tree<K, V>
             tree.meta_mut().root = child;
         }
     }
+    /// # Safety
+    /// The node pointer has to point to a black node.
+    ///
+    /// The node pointer has to be owned by tree.
     #[inline]
     unsafe fn fix_remove(mut ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
     ) {
-        // ASSERT: node is black
         #[inline]
         unsafe fn helper<const I: usize, K, V>(mut ptr: NodeIndex, mut parent: NodeIndex,
             tree: &mut impl TreeWriter<K, V>
@@ -365,5 +382,24 @@ impl<K: Ord, V> Tree<K, V>
             ptr = left;
         }
         ptr
+    }
+    #[inline]
+    fn closest<const I: usize, const INCLUSIVE: bool>(ptr: NodeRef, key: &K,
+        tree: &impl TreeReader<K, V>
+    ) -> NodeRef
+        where [(); 1 - I]:
+    {
+        match Self::search(ptr, key, tree) {
+            SearchResult::Empty => None,
+            SearchResult::Here(node) =>
+                if INCLUSIVE { tree[node].order[I] }
+                else { Some(node) },
+            SearchResult::LeftOf(node) =>
+                if I == 0 { Some(node) }
+                else { tree[node].order[1] },
+            SearchResult::RightOf(node) =>
+                if I == 1 { Some(node) }
+                else { tree[node].order[0] }
+        }
     }
 }
