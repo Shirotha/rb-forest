@@ -91,6 +91,10 @@ impl<'a, T, M> Writer<Index, Error> for PortWriteGuard<'a, T, M> {
     fn get_many_mut<const N: usize>(&mut self, indices: [Index; N]) -> Result<[&mut T; N], Error> {
         self.arena_mut().get_many_mut(indices)
     }
+    #[inline]
+    fn get_many_mut_option<const N: usize>(&mut self, indices: [Option<Index>; N]) -> Result<[Option<&mut Self::Item>; N], Error> {
+        self.arena_mut().get_many_mut_option(indices)
+    }
 }
 
 #[derive(Debug)]
@@ -138,6 +142,10 @@ impl<'a, T, M> Writer<Index, Error> for PortAllocGuard<'a, T, M> {
     #[inline]
     fn get_many_mut<const N: usize>(&mut self, indices: [Index; N]) -> Result<[&mut T; N], Error> {
         self.arena_mut().get_many_mut(indices)
+    }
+    #[inline]
+    fn get_many_mut_option<const N: usize>(&mut self, indices: [Option<Index>; N]) -> Result<[Option<&mut Self::Item>; N], Error> {
+        self.arena_mut().get_many_mut_option(indices)
     }
 }
 

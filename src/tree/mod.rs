@@ -20,8 +20,8 @@ use crate::{
     arena::{Port, Index, Meta, MetaMut, Error as ArenaError},
 };
 
-pub trait TreeReader<K, V> = Reader<Index, Item = Node<K, V>> + IndexRO<NodeIndex, Output = Node<K, V>> + Meta<Type = Bounds>;
-pub trait TreeWriter<K, V> = Writer<Index, ArenaError, Item = Node<K, V>> + IndexMut<NodeIndex, Output = Node<K, V>> + MetaMut<Type = Bounds>;
+pub trait TreeReader<K: Ord, V: Value> = Reader<Index, Item = Node<K, V>> + IndexRO<NodeIndex, Output = Node<K, V>> + Meta<Type = Bounds>;
+pub trait TreeWriter<K: Ord, V: Value> = Writer<Index, ArenaError, Item = Node<K, V>> + IndexMut<NodeIndex, Output = Node<K, V>> + MetaMut<Type = Bounds>;
 
 
 #[derive_const(Debug, Error)]
@@ -50,14 +50,47 @@ pub struct Bounds {
 }
 
 #[derive(Debug)]
-pub struct Tree<K, V> {
+pub struct Tree<K: Ord, V: Value> {
     port: Port<Node<K, V>, Bounds>
 }
 
-impl<K, V> Tree<K, V> {
+impl<K: Ord, V: Value> Tree<K, V> {
     #[inline(always)]
     pub(crate) fn new(port: Port<Node<K, V>, Bounds>) -> Self {
         Self { port }
+    }
+    /// # Safety
+    /// The left and right pointers have to be pointing to the children of the node pointer.
+    ///
+    /// The node pointer has to be owned by tree.
+    #[inline]
+    unsafe fn update_cumulant(ptr: NodeIndex, [left, right]: [NodeRef; 2],
+        tree: &mut impl TreeWriter<K, V>
+    ) -> Result<(), Error> {
+        let [node, left, right] = tree.get_many_mut_option([Some(ptr), left, right])?;
+        let left = left.map( |left| left.value.cumulant() );
+        let right = right.map( |right| right.value.cumulant() );
+        // SAFETY: node is not null
+        node.unwrap().value.update_cumulant([left, right]);
+        Ok(())
+    }
+    /// # Safety
+    ///
+    /// The node pointer has to be owned by tree.
+    #[inline]
+    unsafe fn propagate_cumulant(ptr: NodeIndex,
+        tree: &mut impl TreeWriter<K, V>
+    ) -> Result<(), Error> {
+        let [mut ptr, mut left, mut right] = [Some(ptr), None, None];
+        while let Some(node) = ptr {
+            {
+                let node = &tree[node];
+                [left, right] = node.children;
+                ptr = node.parent;
+            }
+            Self::update_cumulant(node, [left, right], tree)?;
+        }
+        Ok(())
     }
     /// # Safety
     /// the node at `ptr->children[1 - I]` cannot be None.
@@ -66,12 +99,17 @@ impl<K, V> Tree<K, V> {
     #[inline]
     unsafe fn rotate<const I: usize>(ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
-    ) where [(); 1 - I]: {
+    ) -> Result<(), Error>
+        where [(); 1 - I]:
+    {
         let node = &tree[ptr];
+        let need_update = node.value.need_update();
         let parent = node.parent;
         // SAFETY: guarantied by caller
-        let other = node.children[1 - I].unwrap();
-        let child_other = tree[other].children[I];
+        let children = node.children;
+        let other = children[1 - I].unwrap();
+        let other_children = tree[other].children;
+        let child_other = other_children[I];
         discard! {
             tree[child_other?].parent = Some(ptr)
         };
@@ -85,11 +123,13 @@ impl<K, V> Tree<K, V> {
         } else {
             tree.meta_mut().root = Some(other);
         }
+        // TODO: are there redundant updates with multiple rotates?
+        if need_update {
+            Self::update_cumulant(ptr, [children[I], other_children[I]], tree)?;
+            Self::update_cumulant(other, [Some(ptr), other_children[1 - I]], tree)?;
+        }
+        Ok(())
     }
-}
-
-impl<K: Ord, V> Tree<K, V>
-{
     #[inline]
     fn search(mut ptr: NodeRef, key: &K,
         tree: &impl TreeReader<K, V>
@@ -118,6 +158,7 @@ impl<K: Ord, V> Tree<K, V>
             }
         } else { SearchResult::Empty }
     }
+    // TODO: propagate cumulants after insert/delete
     /// # Safety
     /// The node at `ptr->children[I]` cannot be None.
     ///

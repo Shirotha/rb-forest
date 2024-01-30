@@ -10,7 +10,7 @@ pub use sorted_iter::sorted_pair_iterator::SortedByKey;
 use crate::{
     arena::{Meta, MetaMut, Port, PortAllocGuard},
     tree::{
-        Bounds, Color, Node, NodeRef, Tree,
+        Bounds, Color, Node, NodeRef, Tree, Value,
         TreeReader, TreeWriter,
         TreeAllocGuard, TreeReadGuard, TreeWriteGuard,
     }
@@ -100,10 +100,10 @@ impl<'a, K: Ord + 'a, V: 'a, W: TreeWriter<K, V>> DoubleEndedIterator for IterMu
 impl<'a, K: Ord, V, W: TreeWriter<K, V>> SortedByKey for IterMut<'a, K, V, W> {}
 
 #[derive(Debug)]
-pub struct IntoIter<K: Ord, V> {
+pub struct IntoIter<K: Ord, V: Value> {
     port: Port<Node<K, V>, Bounds>
 }
-impl<K: Ord, V> Iterator for IntoIter<K, V> {
+impl<K: Ord, V: Value> Iterator for IntoIter<K, V> {
     type Item = (K, V);
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -126,7 +126,7 @@ impl<K: Ord, V> Iterator for IntoIter<K, V> {
         (len, Some(len))
     }
 }
-impl<K: Ord, V> DoubleEndedIterator for IntoIter<K, V> {
+impl<K: Ord, V: Value> DoubleEndedIterator for IntoIter<K, V> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         let mut port = self.port.alloc();
@@ -142,13 +142,13 @@ impl<K: Ord, V> DoubleEndedIterator for IntoIter<K, V> {
         Some((node.key, node.value))
     }
 }
-impl<K: Ord, V> ExactSizeIterator for IntoIter<K, V> {}
+impl<K: Ord, V: Value> ExactSizeIterator for IntoIter<K, V> {}
 #[cfg(feature = "sorted-iter")]
-impl<K: Ord, V> SortedByKey for IntoIter<K, V> {}
+impl<K: Ord, V: Value> SortedByKey for IntoIter<K, V> {}
 
 macro_rules! impl_Iter {
     ( $type:ident ) => {
-        impl<'a, K: Ord, V> $type <'a, K, V> {
+        impl<'a, K: Ord, V: Value> $type <'a, K, V> {
             #[inline]
             pub fn iter(&self) -> Iter<K, V, impl TreeReader<K, V> + 'a> {
                 let [front, back] = self.0.meta().range;
@@ -172,7 +172,7 @@ impl_Iter!(TreeAllocGuard);
 
 macro_rules! impl_IterMut {
     ( $type:ident ) => {
-        impl<'a, K: Ord, V> $type <'a, K, V> {
+        impl<'a, K: Ord, V: Value> $type <'a, K, V> {
             #[inline]
             pub fn iter_mut(&mut self) -> IterMut<K, V, impl TreeWriter<K, V> + 'a> {
                 let [front, back] = self.0.meta().range;
@@ -195,7 +195,7 @@ impl_IterMut!(TreeAllocGuard);
 
 macro_rules! impl_IntoIterator_Ref {
     ( $type:ident ) => {
-        impl<'a, K: Ord, V> IntoIterator for &'a $type <'a, K, V> {
+        impl<'a, K: Ord, V: Value> IntoIterator for &'a $type <'a, K, V> {
             type IntoIter = Iter<'a, K, V, impl TreeReader<K, V> + 'a>;
             type Item = <Self::IntoIter as Iterator>::Item;
             #[inline]
@@ -212,7 +212,7 @@ impl_IntoIterator_Ref!(TreeAllocGuard);
 
 macro_rules! impl_IntoIterator_Mut {
     ( $type:ident ) => {
-        impl<'a, K: Ord, V> IntoIterator for &'a mut $type <'a, K, V> {
+        impl<'a, K: Ord, V: Value> IntoIterator for &'a mut $type <'a, K, V> {
             type IntoIter = IterMut<'a, K, V, impl TreeWriter<K, V> + 'a>;
             type Item = <Self::IntoIter as Iterator>::Item;
             #[inline]
@@ -227,7 +227,7 @@ macro_rules! impl_IntoIterator_Mut {
 impl_IntoIterator_Mut!(TreeWriteGuard);
 impl_IntoIterator_Mut!(TreeAllocGuard);
 
-impl<K: Ord, V> IntoIterator for Tree<K, V> {
+impl<K: Ord, V: Value> IntoIterator for Tree<K, V> {
     type IntoIter = IntoIter<K, V>;
     type Item = <Self::IntoIter as Iterator>::Item;
     #[inline(always)]
@@ -236,14 +236,14 @@ impl<K: Ord, V> IntoIterator for Tree<K, V> {
     }
 }
 
-impl<K: Ord, V> Tree<K, V> {
+impl<K: Ord, V: Value> Tree<K, V> {
     #[inline]
     /// # Safety
     /// It is assumed that the given iterator is sorted by K in incresing order.
     ///
     /// For a safe version of this function use the 'sorted-iter' feature.
     pub(crate) unsafe fn from_sorted_iter_unchecked(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V)>) -> Self {
-        fn build_tree<K: Ord, V>(
+        fn build_tree<K: Ord, V: Value>(
             port: &mut PortAllocGuard<Node<K, V>, Bounds>,
             items: &[(K, V)], parent: NodeRef, color: Color
         ) -> [NodeRef; 3]

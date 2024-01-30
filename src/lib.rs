@@ -19,7 +19,7 @@ use sorted_iter::sorted_pair_iterator::SortedByKey;
 
 use crate::{
     arena::{Arena, Port},
-    tree::{Tree, Node, Bounds}
+    tree::{Tree, Node, Bounds, Value}
 };
 
 pub struct DeferDiscard(bool);
@@ -72,13 +72,14 @@ pub trait Reader<T> {
 pub trait Writer<T, E>: Reader<T> {
     fn get_mut(&mut self, index: T) -> Option<&mut Self::Item>;
     fn get_many_mut<const N: usize>(&mut self, indices: [T; N]) -> Result<[&mut Self::Item; N], E>;
+    fn get_many_mut_option<const N: usize>(&mut self, indices: [Option<T>; N]) -> Result<[Option<&mut Self::Item>; N], E>;
 }
 
 #[derive(Debug)]
-pub struct OwnedForest<K, V> {
+pub struct OwnedForest<K: Ord, V: Value> {
     free_port: Port<Node<K, V>, Bounds>,
 }
-impl<K: Ord, V> OwnedForest<K, V> {
+impl<K: Ord, V: Value> OwnedForest<K, V> {
     #[inline]
     pub fn new() -> Self {
         Self { free_port: Arena::new().into_port(Bounds::default()) }
@@ -105,7 +106,7 @@ impl<K: Ord, V> OwnedForest<K, V> {
         Tree::from_sorted_iter(self.free_port.split_with_meta(Bounds::default()), iter)
     }
 }
-impl<K: Ord, V> Default for OwnedForest<K, V> {
+impl<K: Ord, V: Value> Default for OwnedForest<K, V> {
     #[inline(always)]
     fn default() -> Self { Self::new() }
 }

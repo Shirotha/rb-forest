@@ -9,10 +9,10 @@ use crate::{
         Meta, MetaMut,
         PortReadGuard, PortWriteGuard, PortAllocGuard
     },
-    tree::{Bounds, Color, Error, Node, NodeIndex, SearchResult, Tree}
+    tree::{Bounds, Color, Error, Node, NodeIndex, SearchResult, Tree, Value}
 };
 
-impl<K: Ord, V> Tree<K, V> {
+impl<K: Ord, V: Value> Tree<K, V> {
     #[inline]
     pub fn read(&self) -> TreeReadGuard<K, V> {
         TreeReadGuard(self.port.read())
@@ -28,14 +28,14 @@ impl<K: Ord, V> Tree<K, V> {
 }
 
 #[derive(Debug)]
-pub struct TreeReadGuard<'a, K: Ord, V>(pub(crate) PortReadGuard<'a, Node<K, V>, Bounds>);
+pub struct TreeReadGuard<'a, K: Ord, V: Value>(pub(crate) PortReadGuard<'a, Node<K, V>, Bounds>);
 
 #[derive(Debug)]
-pub struct TreeWriteGuard<'a, K: Ord, V>(pub(crate) PortWriteGuard<'a, Node<K, V>, Bounds>);
+pub struct TreeWriteGuard<'a, K: Ord, V: Value>(pub(crate) PortWriteGuard<'a, Node<K, V>, Bounds>);
 
 #[derive(Debug)]
-pub struct TreeAllocGuard<'a, K: Ord, V>(pub(crate) PortAllocGuard<'a, Node<K, V>, Bounds>);
-impl<'a, K: Ord, V> TreeAllocGuard<'a, K, V> {
+pub struct TreeAllocGuard<'a, K: Ord, V: Value>(pub(crate) PortAllocGuard<'a, Node<K, V>, Bounds>);
+impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
     #[inline]
     pub fn downgrade(self) -> TreeWriteGuard<'a, K, V> {
         TreeWriteGuard(self.0.downgrade())
@@ -125,7 +125,7 @@ impl<'a, K: Ord, V> TreeAllocGuard<'a, K, V> {
 
 macro_rules! impl_Reader {
     ( $type:ident ) => {
-        impl<'a, K: Ord, V> Reader<&K> for $type <'a, K, V> {
+        impl<'a, K: Ord, V: Value> Reader<&K> for $type <'a, K, V> {
             type Item = V;
             #[inline]
             fn get(&self, key: &K) -> Option<&V> {
@@ -147,7 +147,7 @@ impl_Reader!(TreeAllocGuard);
 
 macro_rules! impl_Writer {
     ( $type:ident ) => {
-        impl<'a, K: Ord, V> Writer<&K, Error> for $type <'a, K, V> {
+        impl<'a, K: Ord, V: Value> Writer<&K, Error> for $type <'a, K, V> {
             #[inline]
             fn get_mut(&mut self, key: &K) -> Option<&mut V> {
                 match Tree::search(self.0.meta().root, key, &self.0) {
@@ -172,6 +172,31 @@ macro_rules! impl_Writer {
                 }
                 Ok(unsafe { MaybeUninit::array_assume_init(result) })
             }
+            #[inline]
+            fn get_many_mut_option<const N: usize>(&mut self, keys: [Option<&K>; N]) -> Result<[Option<&mut V>; N], Error> {
+                let mut ptrs = MaybeUninit::uninit_array::<N>();
+                for (ptr, key) in ptrs.iter_mut().zip(keys) {
+                    if let Some(key) = key {
+                        match Tree::search(self.0.meta().root, key, &self.0) {
+                            SearchResult::Here(found) => _ = ptr.write(Some(found)),
+                            _ => Err(Error::GetManyMut)?
+                        }
+                    } else {
+                        ptr.write(None);
+                    }
+                }
+                let ptrs = unsafe { MaybeUninit::array_assume_init(ptrs) };
+                let nodes = self.0.get_many_mut_option(ptrs)?;
+                let mut result = MaybeUninit::uninit_array::<N>();
+                for (result, node) in result.iter_mut().zip(nodes) {
+                    if let Some(node) = node {
+                        result.write(Some(&mut node.value));
+                    } else {
+                        result.write(None);
+                    }
+                }
+                Ok(unsafe { MaybeUninit::array_assume_init(result) })
+            }
         }
     };
 }
@@ -180,7 +205,7 @@ impl_Writer!(TreeAllocGuard);
 
 macro_rules! impl_Bounds {
     ( $type:ident ) => {
-        impl<'a, K: Ord, V> $type <'a, K, V> {
+        impl<'a, K: Ord, V: Value> $type <'a, K, V> {
             #[inline(always)]
             pub fn len(&self) -> usize {
                 self.0.meta().len

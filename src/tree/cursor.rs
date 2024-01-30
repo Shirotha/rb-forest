@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use crate::{
     arena::{Meta, PortAllocGuard},
     tree::{
-        Tree, Bounds, Node, NodeRef,
+        Tree, Bounds, Node, NodeRef, Value,
         Iter, IterMut,
         TreeReader, TreeWriter,
     }
@@ -24,7 +24,7 @@ pub struct CursorMut<'a, K: Ord, V, W: TreeWriter<K, V>> {
 }
 
 #[derive(Debug)]
-pub struct CursorAlloc<'a, 'b, K: Ord, V> {
+pub struct CursorAlloc<'a, 'b, K: Ord, V: Value> {
     tree: &'a mut PortAllocGuard<'b, Node<K, V>, Bounds>,
     current: NodeRef
 }
@@ -53,7 +53,7 @@ pub trait CursorMove {
 
 macro_rules! impl_CursorMove {
     ( $type:ident ; $( $pre:lifetime ),* ; $( $post:ident : $postcond:path ),*) => {
-        impl<'a, $( $pre , )* K: Ord, V, $( $post : $postcond ),* > CursorMove for $type <'a, $( $pre , )* K, V, $( $post ),* > {
+        impl<'a, $( $pre , )* K: Ord, V: Value, $( $post : $postcond ),* > CursorMove for $type <'a, $( $pre , )* K, V, $( $post ),* > {
             #[inline]
             fn move_order<const I: usize>(&mut self)
                 where [(); 1 - I]:
@@ -92,7 +92,7 @@ pub trait CursorRead<K, V> {
 
 macro_rules! impl_CursorRead {
     ( $type:ident ; $( $pre:lifetime ),* ; $( $post:ident : $postcond:path ),*) => {
-        impl<'a, $( $pre , )* K: Ord, V, $( $post : $postcond ),* > CursorRead<K, V> for $type <'a, $( $pre , )* K, V, $( $post ),* > {
+        impl<'a, $( $pre , )* K: Ord, V: Value, $( $post : $postcond ),* > CursorRead<K, V> for $type <'a, $( $pre , )* K, V, $( $post ),* > {
             #[inline]
             fn key(&self) -> Option<&K> {
                 Some(&self.tree[self.current?].key)
@@ -136,7 +136,7 @@ pub trait CursorPeek<K, V>: CursorMove + CursorRead<K, V> {
 }
 macro_rules! impl_CursorPeek {
     ( $type:ident ; $( $pre:lifetime ),* ; $( $post:ident : $postcond:path ),*) => {
-        impl<'a, $( $pre , )* K: Ord, V, $( $post : $postcond ),* > CursorPeek<K, V> for $type <'a, $( $pre , )* K, V, $( $post ),* > {
+        impl<'a, $( $pre , )* K: Ord, V: Value, $( $post : $postcond ),* > CursorPeek<K, V> for $type <'a, $( $pre , )* K, V, $( $post ),* > {
             #[inline]
             fn peek_order<const I: usize>(&self) -> Option<(&K, &V)>
                 where [(); 1 - I]:
@@ -171,7 +171,7 @@ trait CursorWrite<K, V>: CursorRead<K, V> {
 }
 macro_rules! impl_CursorWrite {
     ( $type:ident ; $( $pre:lifetime ),* ; $( $post:ident : $postcond:path ),*) => {
-        impl<'a, $( $pre , )* K: Ord, V, $( $post : $postcond ),* > CursorWrite<K, V> for $type <'a, $( $pre , )* K, V, $( $post ),* > {
+        impl<'a, $( $pre , )* K: Ord, V: Value, $( $post : $postcond ),* > CursorWrite<K, V> for $type <'a, $( $pre , )* K, V, $( $post ),* > {
             #[inline]
             fn value_mut(&mut self) -> Option<&mut V> {
                 Some(&mut self.tree[self.current?].value)
@@ -182,7 +182,7 @@ macro_rules! impl_CursorWrite {
 impl_CursorWrite!(CursorMut;; W: TreeWriter<K, V>);
 impl_CursorWrite!(CursorAlloc; 'b;);
 
-impl<'a, 'b, K: Ord, V> CursorAlloc<'a, 'b, K, V> {
+impl<'a, 'b, K: Ord, V: Value> CursorAlloc<'a, 'b, K, V> {
     #[inline]
     pub fn remove_order<const I: usize>(&mut self) -> Option<(K, V)>
         where [(); 1 - I]:
@@ -223,7 +223,7 @@ impl<'a, 'b, K: Ord, V> CursorAlloc<'a, 'b, K, V> {
 
 macro_rules! impl_Iter {
     ( $type:ident ; $( $pre:lifetime ),* ; $( $post:ident : $postcond:path ),*) => {
-        impl<'a, $( $pre , )* K: Ord, V, $( $post : $postcond ),* > $type <'a, $( $pre , )* K, V, $( $post ),* > {
+        impl<'a, $( $pre , )* K: Ord, V: Value, $( $post : $postcond ),* > $type <'a, $( $pre , )* K, V, $( $post ),* > {
             #[inline]
             pub fn iter_below(&self) -> Iter<K, V, impl TreeReader<K, V> + 'a> {
                 let [front, back] = if let Some(current) = self.current {
@@ -243,7 +243,7 @@ impl_Iter!(CursorAlloc; 'b;);
 
 macro_rules! impl_IterMut {
     ( $type:ident ; $( $pre:lifetime ),* ; $( $post:ident : $postcond:path ),*) => {
-        impl<'a, $( $pre , )* K: Ord, V, $( $post : $postcond ),* > $type <'a, $( $pre , )* K, V, $( $post ),* > {
+        impl<'a, $( $pre , )* K: Ord, V: Value, $( $post : $postcond ),* > $type <'a, $( $pre , )* K, V, $( $post ),* > {
             #[inline]
             pub fn iter_below_mut(&mut self) -> IterMut<K, V, impl TreeWriter<K, V> + 'a $( + $pre )*> {
                 let [front, back] = if let Some(current) = self.current {

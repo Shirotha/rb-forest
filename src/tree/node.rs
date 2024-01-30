@@ -22,10 +22,67 @@ impl const Not for Color {
     }
 }
 
-// TODO: implement Cumulants as CumulantType trait + NoCumulant/WithCumulant(data, update_callback) structs
+#[const_trait]
+pub trait Value {
+    type Local;
+    type Cumulant;
+    fn get(&self) -> &Self::Local;
+    fn get_mut(&mut self) -> &mut Self::Local;
+    fn cumulant(&self) -> &Self::Cumulant;
+    fn update_cumulant(&mut self, children: [Option<&Self::Cumulant>; 2]);
+    fn need_update(&self) -> bool;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NoCumulant<T>(T);
+impl<T> const Value for NoCumulant<T> {
+    type Local = T;
+    type Cumulant = ();
+    #[inline(always)]
+    fn get(&self) -> &Self::Local {
+        &self.0
+    }
+    #[inline(always)]
+    fn get_mut(&mut self) -> &mut Self::Local {
+        &mut self.0
+    }
+    #[inline(always)]
+    fn cumulant(&self) -> &Self::Cumulant {
+        &()
+    }
+    #[inline(always)]
+    fn update_cumulant(&mut self, _children: [Option<&Self::Cumulant>; 2]) { }
+    #[inline(always)]
+    fn need_update(&self) -> bool { false }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct WithCumulant<T, C, F: Fn(&mut C, &T, [Option<&C>; 2])>(T, C, F);
+impl<T, C, F: Fn(&mut C, &T, [Option<&C>; 2])> const Value for WithCumulant<T, C, F> {
+    type Local = T;
+    type Cumulant = C;
+    #[inline(always)]
+    fn get(&self) -> &Self::Local {
+        &self.0
+    }
+    #[inline(always)]
+    fn get_mut(&mut self) -> &mut Self::Local {
+        &mut self.0
+    }
+    #[inline(always)]
+    fn cumulant(&self) -> &Self::Cumulant {
+        &self.1
+    }
+    #[inline(always)]
+    fn update_cumulant(&mut self, children: [Option<&Self::Cumulant>; 2]) {
+        self.2(&mut self.1, &self.0, children)
+    }
+    #[inline(always)]
+    fn need_update(&self) -> bool { true }
+}
 
 #[derive(Debug)]
-pub(crate) struct Node<K, V> {
+pub(crate) struct Node<K: Ord, V: Value> {
     pub key: K,
     pub value: V,
     pub color: Color,
@@ -34,7 +91,7 @@ pub(crate) struct Node<K, V> {
     pub order: [NodeRef; 2]
 }
 
-impl<K, V> Node<K, V> {
+impl<K: Ord, V: Value> Node<K, V> {
     #[inline]
     pub const fn new(key: K, value: V, color: Color) -> Self {
         Self {

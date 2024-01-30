@@ -156,4 +156,9 @@ impl<T> Arena<T> {
         // SAFETY: initialized in previous loop
         Ok(unsafe { MaybeUninit::array_assume_init(result) })
     }
+    #[inline]
+    fn get_many_mut_option<const N: usize>(&mut self, indices: [Option<Index>; N]) -> Result<[Option<&mut T>; N], Error> {
+        // TODO: implement this
+        todo!()
+    }
 }
