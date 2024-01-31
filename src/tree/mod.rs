@@ -87,7 +87,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
     unsafe fn propagate_cumulant(ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
     ) {
-        let [mut ptr, mut left, mut right] = [Some(ptr), None, None];
+        let mut ptr = Some(ptr);
         while let Some(index) = ptr {
             let node = &tree[index];
             ptr = node.parent;
@@ -105,20 +105,26 @@ impl<K: Ord, V: Value> Tree<K, V> {
         let node = &tree[ptr];
         let parent = node.parent;
         // SAFETY: guarantied by caller
-        let other = node.children[1 - I].unwrap();
-        let child_other = tree[other].children[I];
+        let pivot = node.children[1 - I].unwrap();
+        let pivot_node = &mut tree[pivot];
+        let child = pivot_node.children[I];
+        pivot_node.parent = parent;
+        pivot_node.children[I] = Some(ptr);
         discard! {
-            tree[child_other?].parent = Some(ptr)
+            tree[child?].parent = Some(ptr)
         };
+        let node = &mut tree[ptr];
+        node.parent = Some(pivot);
+        node.children[1 - I] = child;
         if let Some(parent) = parent {
             let parent_node = &mut tree[parent];
             if parent_node.children[I].is_some_and( |child| child == ptr ) {
-                parent_node.children[I] = Some(other);
+                parent_node.children[I] = Some(pivot);
             } else {
-                parent_node.children[1 - I] = Some(other);
+                parent_node.children[1 - I] = Some(pivot);
             }
         } else {
-            tree.meta_mut().root = Some(other);
+            tree.meta_mut().root = Some(pivot);
         }
     }
     #[inline]

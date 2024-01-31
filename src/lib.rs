@@ -137,7 +137,7 @@ mod test {
 
     #[test]
     fn iter() {
-        let mut values = vec![-10, 2, 0, 3];
+        let mut values = vec![1, 7, 8, 9, 10, 6, 5, 2, 3, 4, 0, 11];
         let mut forest = WeakForest::with_capacity(values.len());
         let mut tree = forest.insert();
         {
