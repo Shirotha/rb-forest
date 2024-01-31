@@ -1,7 +1,4 @@
-use std::{
-    ops::RangeInclusive,
-    mem::MaybeUninit
-};
+use std::ops::RangeInclusive;
 
 use crate::{
     Reader, Writer,
@@ -156,46 +153,44 @@ macro_rules! impl_Writer {
                 }
             }
             #[inline]
-            fn get_many_mut<const N: usize>(&mut self, keys: [&K; N]) -> Result<[&mut V; N], Error> {
-                let mut ptrs = MaybeUninit::uninit_array::<N>();
-                for (ptr, key) in ptrs.iter_mut().zip(keys) {
-                    match Tree::search(self.0.meta().root, key, &self.0) {
-                        SearchResult::Here(found) => _ = ptr.write(found),
-                        _ => Err(Error::GetManyMut)?
-                    }
+            fn get_pair_mut(&mut self, a: &K, b: &K) -> Result<[Option<&mut V>; 2], Error> {
+                if a == b {
+                    return Err(Error::KeyAlias);
                 }
-                let ptrs = unsafe { MaybeUninit::array_assume_init(ptrs) };
-                let nodes = self.0.get_many_mut(ptrs)?;
-                let mut result = MaybeUninit::uninit_array::<N>();
-                for (result, node) in result.iter_mut().zip(nodes) {
-                    result.write(&mut node.value);
+                let root = self.0.meta().root;
+                let a = Tree::search(root, a, &self.0);
+                let b = Tree::search(root, b, &self.0);
+                match (a, b) {
+                    (SearchResult::Here(a), SearchResult::Here(b)) => {
+                        // SAFETY: a and b are checked before this
+                        let [a, b] = self.0.get_pair_mut(a, b).unwrap();
+                        Ok([
+                            a.map( |a| &mut a.value ),
+                            b.map( |b| &mut b.value )
+                        ])
+                    },
+                    (SearchResult::Here(a), _) => Ok([Some(&mut self.0[a].value), None]),
+                    (_, SearchResult::Here(b)) => Ok([None, Some(&mut self.0[b].value)]),
+                    _ => Ok([None, None])
                 }
-                Ok(unsafe { MaybeUninit::array_assume_init(result) })
             }
             #[inline]
-            fn get_many_mut_option<const N: usize>(&mut self, keys: [Option<&K>; N]) -> Result<[Option<&mut V>; N], Error> {
-                let mut ptrs = MaybeUninit::uninit_array::<N>();
-                for (ptr, key) in ptrs.iter_mut().zip(keys) {
-                    if let Some(key) = key {
-                        match Tree::search(self.0.meta().root, key, &self.0) {
-                            SearchResult::Here(found) => _ = ptr.write(Some(found)),
-                            _ => Err(Error::GetManyMut)?
-                        }
-                    } else {
-                        ptr.write(None);
-                    }
+            fn get_mut_with<const N: usize>(&mut self, key: &K, others: [Option<&K>; N]) -> Result<(Option<&mut V>, [Option<&V>; N]), Error> {
+                if others.iter().any( |k| k.is_some_and( |k| k == key ) ) {
+                    return Err(Error::KeyAlias)
                 }
-                let ptrs = unsafe { MaybeUninit::array_assume_init(ptrs) };
-                let nodes = self.0.get_many_mut_option(ptrs)?;
-                let mut result = MaybeUninit::uninit_array::<N>();
-                for (result, node) in result.iter_mut().zip(nodes) {
-                    if let Some(node) = node {
-                        result.write(Some(&mut node.value));
-                    } else {
-                        result.write(None);
-                    }
+                let root = self.0.meta().root;
+                if let SearchResult::Here(x) = Tree::search(root, key, &self.0) {
+                    let others = others.map( |k| k.and_then( |k| Tree::search(root, k, &self.0).into_here() ) );
+                    // SAFETY: all keys are checked before this
+                    let (x, others) = self.0.get_mut_with(x, others).unwrap();
+                    Ok((
+                        x.map( |x| &mut x.value ),
+                        others.map( |x| x.map( |x| &x.value ) )
+                    ))
+                } else {
+                    Ok((None, others.map( |k| k.and_then( |k| self.get(k) ) )))
                 }
-                Ok(unsafe { MaybeUninit::array_assume_init(result) })
             }
         }
     };

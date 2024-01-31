@@ -30,7 +30,7 @@ pub trait Value {
     fn get_mut(&mut self) -> &mut Self::Local;
     fn cumulant(&self) -> &Self::Cumulant;
     fn update_cumulant(&mut self, children: [Option<&Self::Cumulant>; 2]);
-    fn need_update(&self) -> bool;
+    fn need_update() -> bool;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -53,7 +53,7 @@ impl<T> const Value for NoCumulant<T> {
     #[inline(always)]
     fn update_cumulant(&mut self, _children: [Option<&Self::Cumulant>; 2]) { }
     #[inline(always)]
-    fn need_update(&self) -> bool { false }
+    fn need_update() -> bool { false }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -78,7 +78,7 @@ impl<T, C, F: Fn(&mut C, &T, [Option<&C>; 2])> const Value for WithCumulant<T, C
         self.2(&mut self.1, &self.0, children)
     }
     #[inline(always)]
-    fn need_update(&self) -> bool { true }
+    fn need_update() -> bool { true }
 }
 
 #[derive(Debug)]

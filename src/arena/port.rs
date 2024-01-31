@@ -88,12 +88,12 @@ impl<'a, T, M> Writer<Index, Error> for PortWriteGuard<'a, T, M> {
         self.arena_mut().get_mut(index)
     }
     #[inline]
-    fn get_many_mut<const N: usize>(&mut self, indices: [Index; N]) -> Result<[&mut T; N], Error> {
-        self.arena_mut().get_many_mut(indices)
+    fn get_pair_mut(&mut self, a: Index, b: Index) -> Result<[Option<&mut T>; 2], Error> {
+        self.arena_mut().get_pair_mut(a, b)
     }
     #[inline]
-    fn get_many_mut_option<const N: usize>(&mut self, indices: [Option<Index>; N]) -> Result<[Option<&mut Self::Item>; N], Error> {
-        self.arena_mut().get_many_mut_option(indices)
+    fn get_mut_with<const N: usize>(&mut self, index: Index, others: [Option<Index>; N]) -> Result<(Option<&mut T>, [Option<&T>; N]), Error> {
+        self.arena_mut().get_mut_with(index, others)
     }
 }
 
@@ -140,12 +140,12 @@ impl<'a, T, M> Writer<Index, Error> for PortAllocGuard<'a, T, M> {
         self.arena_mut().get_mut(index)
     }
     #[inline]
-    fn get_many_mut<const N: usize>(&mut self, indices: [Index; N]) -> Result<[&mut T; N], Error> {
-        self.arena_mut().get_many_mut(indices)
+    fn get_pair_mut(&mut self, a: Index, b: Index) -> Result<[Option<&mut T>; 2], Error> {
+        self.arena_mut().get_pair_mut(a, b)
     }
     #[inline]
-    fn get_many_mut_option<const N: usize>(&mut self, indices: [Option<Index>; N]) -> Result<[Option<&mut Self::Item>; N], Error> {
-        self.arena_mut().get_many_mut_option(indices)
+    fn get_mut_with<const N: usize>(&mut self, index: Index, others: [Option<Index>; N]) -> Result<(Option<&mut T>, [Option<&T>; N]), Error> {
+        self.arena_mut().get_mut_with(index, others)
     }
 }
 

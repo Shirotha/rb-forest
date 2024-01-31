@@ -28,8 +28,8 @@ pub trait TreeWriter<K: Ord, V: Value> = Writer<Index, ArenaError, Item = Node<K
 pub enum Error {
     #[error("key already exists")]
     DuplicateKey,
-    #[error("invalid key combination")]
-    GetManyMut,
+    #[error("keys have to be pairwise different")]
+    KeyAlias,
     #[error(transparent)]
     Arena(#[from] ArenaError)
 }
@@ -40,6 +40,13 @@ enum SearchResult<T> {
     LeftOf(T),
     Here(T),
     RightOf(T)
+}
+impl<T> SearchResult<T> {
+    #[inline]
+    fn into_here(self) -> Option<T> {
+        let Self::Here(value) = self else { return None };
+        Some(value)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -64,15 +71,14 @@ impl<K: Ord, V: Value> Tree<K, V> {
     ///
     /// The node pointer has to be owned by tree.
     #[inline]
-    unsafe fn update_cumulant(ptr: NodeIndex, [left, right]: [NodeRef; 2],
+    unsafe fn update_cumulant(ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
-    ) -> Result<(), Error> {
-        let [node, left, right] = tree.get_many_mut_option([Some(ptr), left, right])?;
+    ) {
+        let [left, right] = tree[ptr].children;
+        let (Some(node), [left, right]) = tree.get_mut_with(ptr, [left, right]).unwrap() else { panic!() };
         let left = left.map( |left| left.value.cumulant() );
         let right = right.map( |right| right.value.cumulant() );
-        // SAFETY: node is not null
-        node.unwrap().value.update_cumulant([left, right]);
-        Ok(())
+        node.value.update_cumulant([left, right]);
     }
     /// # Safety
     ///
@@ -80,17 +86,13 @@ impl<K: Ord, V: Value> Tree<K, V> {
     #[inline]
     unsafe fn propagate_cumulant(ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
-    ) -> Result<(), Error> {
+    ) {
         let [mut ptr, mut left, mut right] = [Some(ptr), None, None];
-        while let Some(node) = ptr {
-            {
-                let node = &tree[node];
-                [left, right] = node.children;
-                ptr = node.parent;
-            }
-            Self::update_cumulant(node, [left, right], tree)?;
+        while let Some(index) = ptr {
+            let node = &tree[index];
+            ptr = node.parent;
+            Self::update_cumulant(index, tree);
         }
-        Ok(())
     }
     /// # Safety
     /// the node at `ptr->children[1 - I]` cannot be None.
@@ -99,17 +101,12 @@ impl<K: Ord, V: Value> Tree<K, V> {
     #[inline]
     unsafe fn rotate<const I: usize>(ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
-    ) -> Result<(), Error>
-        where [(); 1 - I]:
-    {
+    ) where [(); 1 - I]: {
         let node = &tree[ptr];
-        let need_update = node.value.need_update();
         let parent = node.parent;
         // SAFETY: guarantied by caller
-        let children = node.children;
-        let other = children[1 - I].unwrap();
-        let other_children = tree[other].children;
-        let child_other = other_children[I];
+        let other = node.children[1 - I].unwrap();
+        let child_other = tree[other].children[I];
         discard! {
             tree[child_other?].parent = Some(ptr)
         };
@@ -123,12 +120,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
         } else {
             tree.meta_mut().root = Some(other);
         }
-        // TODO: are there redundant updates with multiple rotates?
-        if need_update {
-            Self::update_cumulant(ptr, [children[I], other_children[I]], tree)?;
-            Self::update_cumulant(other, [Some(ptr), other_children[1 - I]], tree)?;
-        }
-        Ok(())
     }
     #[inline]
     fn search(mut ptr: NodeRef, key: &K,
@@ -181,7 +172,10 @@ impl<K: Ord, V: Value> Tree<K, V> {
         parent_node.children[I] = Some(ptr);
         parent_node.order[I] = Some(ptr);
         if parent_node.parent.is_some() {
-            Self::fix_insert(ptr, tree)
+            Self::fix_insert(ptr, tree);
+        }
+        if V::need_update() {
+            Self::propagate_cumulant(ptr, tree);
         }
     }
     /// # Safety
@@ -191,7 +185,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
         tree: &mut impl TreeWriter<K, V>
     ) {
         #[inline]
-        unsafe fn helper<const I: usize, const J: usize, K, V>(mut ptr: NodeIndex, parent: NodeIndex, grandparent: NodeIndex,
+        unsafe fn helper<const I: usize, const J: usize, K: Ord, V: Value>(mut ptr: NodeIndex, parent: NodeIndex, grandparent: NodeIndex,
             tree: &mut impl TreeWriter<K, V>
         ) -> NodeIndex
             where [(); 1 - I]:, [(); 1 - J]:, [(); 1 - (1 - I)]:
@@ -209,8 +203,11 @@ impl<K: Ord, V: Value> Tree<K, V> {
             } else {
                 if I == J {
                     // Case 3.2.2
+                    Tree::rotate::<{1 - I}>(parent, tree);
+                    if V::need_update() {
+                        Tree::update_cumulant(parent, tree);
+                    }
                     ptr = parent;
-                    Tree::rotate::<{1 - I}>(ptr, tree);
                 }
                 // Case 3.2.1
                 // SAFETY: guarantied by caller
@@ -219,8 +216,12 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 parent_node.color = Color::Black;
                 // SAFETY: guarantied by caller
                 let grandparent = parent_node.parent.unwrap();
-                tree[grandparent].color = Color::Red;
+                let grandparent_node = &mut tree[grandparent];
+                grandparent_node.color = Color::Red;
                 Tree::rotate::<I>(grandparent, tree);
+                if V::need_update() {
+                    Tree::update_cumulant(grandparent, tree);
+                }
             }
             ptr
         }
@@ -252,6 +253,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             if Some(ptr) == tree.meta().root { break }
         }
         // SAFETY: tree is not empty
+        // NOTE: remove when adding join
         let root = tree.meta().root.unwrap();
         tree[root].color = Color::Black
     }
@@ -263,6 +265,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
         tree: &mut impl TreeWriter<K, V>
     ) {
         let node = &tree[ptr];
+        let parent = node.parent;
         let mut color = node.color;
         let [prev, next] = node.order;
         let fix = if node.children[0].is_none() {
@@ -312,6 +315,9 @@ impl<K: Ord, V: Value> Tree<K, V> {
             // SAFETY: search was successful, so tree cannot be empty
             Self::fix_remove(fix, tree)
         }
+        if let (Some(parent), true) = (parent, V::need_update()) {
+            Self::propagate_cumulant(parent, tree);
+        }
     }
     /// # Safety
     /// The child pointer has to be a child node of the given node.
@@ -345,7 +351,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
         tree: &mut impl TreeWriter<K, V>
     ) {
         #[inline]
-        unsafe fn helper<const I: usize, K, V>(mut ptr: NodeIndex, mut parent: NodeIndex,
+        unsafe fn helper<const I: usize, K: Ord, V: Value>(mut ptr: NodeIndex, mut parent: NodeIndex,
             tree: &mut impl TreeWriter<K, V>
         ) -> NodeIndex
             where [(); 1 - I]:, [(); 1 - (1 - I)]:
@@ -378,6 +384,12 @@ impl<K: Ord, V: Value> Tree<K, V> {
                     };
                     tree[sibling].color = Color::Red;
                     Tree::rotate::<{1 - I}>(sibling, tree);
+                    if V::need_update() {
+                        Tree::update_cumulant(sibling, tree);
+                        discard! {
+                            Tree::update_cumulant(nephews[I]?, tree)
+                        };
+                    }
                     // SAFETY: tree is balanced, so nodes on parent level cannot be null
                     parent = tree[ptr].parent.unwrap();
                     // SAFETY: tree is balanced, so nodes on node level cannot be null
@@ -385,7 +397,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 }
                 // Case 3.4
                 // SAFETY: sibling is child of parent, both exist
-                let [sibling_node, parent_node] = tree.get_many_mut([sibling, parent]).unwrap();
+                let [Some(sibling_node), Some(parent_node)] = tree.get_pair_mut(sibling, parent).unwrap() else { panic!() };
                 sibling_node.color = parent_node.color;
                 parent_node.color = Color::Black;
                 // SAFETY: tree is balanced, so nodes on node level cannot be null

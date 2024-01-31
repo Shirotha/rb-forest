@@ -71,8 +71,9 @@ pub trait Reader<T> {
 
 pub trait Writer<T, E>: Reader<T> {
     fn get_mut(&mut self, index: T) -> Option<&mut Self::Item>;
-    fn get_many_mut<const N: usize>(&mut self, indices: [T; N]) -> Result<[&mut Self::Item; N], E>;
-    fn get_many_mut_option<const N: usize>(&mut self, indices: [Option<T>; N]) -> Result<[Option<&mut Self::Item>; N], E>;
+    fn get_pair_mut(&mut self, a: T, b: T) -> Result<[Option<&mut Self::Item>; 2], E>;
+    #[allow(clippy::type_complexity)]
+    fn get_mut_with<const N: usize>(&mut self, idnex: T, others: [Option<T>; N]) -> Result<(Option<&mut Self::Item>, [Option<&Self::Item>; N]), E>;
 }
 
 #[derive(Debug)]

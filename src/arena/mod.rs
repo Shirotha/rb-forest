@@ -2,27 +2,16 @@ mod port;
 #[allow(unused_imports)]
 pub use port::*;
 
-use core::slice::GetManyMutError;
-use std::{
-    mem::{replace, MaybeUninit},
-    intrinsics::transmute_unchecked,
-    fmt::Debug,
-};
+use std::mem::replace;
 
 use thiserror::Error;
 
 #[derive_const(Debug, Error)]
 pub enum Error {
-    #[error("invalid index combination")]
-    GetManyMut,
+    #[error("indices have to be pairwise different")]
+    IndexAlias,
     #[error("one of the indices is invalid")]
     NotOccupied,
-}
-impl<const N: usize> const From<GetManyMutError<N>> for Error {
-    #[inline]
-    fn from(_value: GetManyMutError<N>) -> Self {
-        Self::GetManyMut
-    }
 }
 
 #[derive_const(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -48,9 +37,29 @@ enum Entry<T> {
     Free(Ref)
 }
 impl<T> Entry<T> {
+    #[inline(always)]
+    fn is_occupied(&self) -> bool {
+        matches!(self, Self::Occupied(_))
+    }
+    #[inline]
+    fn value(&self) -> Option<&T> {
+        let Self::Occupied(value) = self else { return None };
+        Some(value)
+    }
+    #[inline]
+    fn value_mut(&mut self) -> Option<&mut T> {
+        let Self::Occupied(value) = self else { return None };
+        Some(value)
+    }
+    #[inline]
     fn into_value(self) -> Option<T> {
         let Self::Occupied(value) = self else { return None };
         Some(value)
+    }
+    #[inline]
+    fn into_head(self) -> Option<Ref> {
+        let Self::Free(head) = self else { return None };
+        Some(head)
     }
 }
 
@@ -80,10 +89,8 @@ impl<T> Arena<T> {
         match self.free {
             Some(head) => {
                 let next = replace(&mut self.items[head.0], Entry::Occupied(value));
-                match next {
-                    Entry::Free(next) => self.free = next,
-                    _ => panic!("this should never happen!")
-                }
+                // SAFETY: the free list can only hold free nodes
+                self.free = next.into_head().unwrap();
                 Ok(head)
             },
             None => {
@@ -111,54 +118,62 @@ impl<T> Arena<T> {
             return None;
         }
         let entry = &mut self.items[index.0];
-        match entry {
-            Entry::Occupied(_) => {
+        if entry.is_occupied() {
                 let old = replace(entry, Entry::Free(self.free));
                 self.free = Some(index);
-                match old {
-                    Entry::Occupied(value) => Some(value),
-                    _ => panic!("this should never happen!")
-                }
-            },
-            _ => None
-        }
+                old.into_value()
+        } else { None }
     }
     #[inline]
     fn get(&self, index: Index) -> Option<&T> {
-        match self.items.get(index.0) {
-            Some(Entry::Occupied(value)) => Some(value),
-            _ => None
-        }
+        self.items.get(index.0).and_then(Entry::value)
     }
     #[inline]
     fn contains(&self, index: Index) -> bool {
-        matches!(self.items.get(index.0), Some(Entry::Occupied(_)))
+        self.items.get(index.0).is_some_and(Entry::is_occupied)
     }
     #[inline]
     fn get_mut(&mut self, index: Index) -> Option<&mut T> {
-        match self.items.get_mut(index.0) {
-            Some(Entry::Occupied(value)) => Some(value),
-            _ => None
-        }
+        self.items.get_mut(index.0).and_then(Entry::value_mut)
     }
     #[inline]
-    fn get_many_mut<const N: usize>(&mut self, indices: [Index; N]) -> Result<[&mut T; N], Error> {
-        // SATEFY: Index is guarantied to have the same memory layout as usize
-        let indices: [usize; N] = unsafe { transmute_unchecked(indices) };
-        let entries = self.items.get_many_mut(indices)?;
-        let mut result = MaybeUninit::uninit_array();
-        for (result, entry) in result.iter_mut().zip(entries) {
-            match entry {
-                Entry::Occupied(value) => _ = result.write(value),
-                _ => Err(Error::NotOccupied)?
-            }
+    fn get_pair_mut(&mut self, a: Index, b: Index) -> Result<[Option<&mut T>; 2], Error> {
+        if a == b {
+            return Err(Error::IndexAlias);
         }
-        // SAFETY: initialized in previous loop
-        Ok(unsafe { MaybeUninit::array_assume_init(result) })
+        let len = self.items.len();
+        if a.0 >= len {
+            return Ok([None, self.get_mut(b)]);
+        }
+        if b.0 >= len {
+            return Ok([self.get_mut(a), None]);
+        }
+        // SAFETY: indices are checked explicitly before
+        Ok(unsafe { self.get_pair_mut_unchecked(a, b) })
+    }
+    /// # Safety
+    /// No bounds- or alias checking is done.
+    #[inline]
+    unsafe fn get_pair_mut_unchecked(&mut self, a: Index, b: Index) -> [Option<&mut T>; 2] {
+        let ptr = self.items.as_mut_ptr();
+        let a = ptr.add(a.0).as_mut().unwrap();
+        let b = ptr.add(b.0).as_mut().unwrap();
+        [a.value_mut(), b.value_mut()]
     }
     #[inline]
-    fn get_many_mut_option<const N: usize>(&mut self, indices: [Option<Index>; N]) -> Result<[Option<&mut T>; N], Error> {
-        // TODO: implement this
-        todo!()
+    fn get_mut_with<const N: usize>(&mut self, index: Index, others: [Option<Index>; N]) -> Result<(Option<&mut T>, [Option<&T>; N]), Error> {
+        if others.iter().any( |i| i.is_some_and( |i| i == index ) ) {
+            return Err(Error::IndexAlias)
+        }
+        // SAFETY: indices are checked explicitly before
+        Ok(unsafe { self.get_mut_with_unchecked(index, others) })
+    }
+    /// # Safety
+    /// No bounds- or alias checking is done.
+    #[inline]
+    unsafe fn get_mut_with_unchecked<const N: usize>(&mut self, index: Index, others: [Option<Index>; N]) -> (Option<&mut T>, [Option<&T>; N]) {
+        let x = self.items.as_mut_ptr().add(index.0).as_mut().unwrap();
+        let others = others.map( |i| i.and_then( |i| self.get(i) ) );
+        (x.value_mut(), others)
     }
 }
