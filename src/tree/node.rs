@@ -33,8 +33,8 @@ pub trait Value {
     fn need_update() -> bool;
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct NoCumulant<T>(T);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoCumulant<T>(pub T);
 impl<T> const Value for NoCumulant<T> {
     type Local = T;
     type Cumulant = ();
@@ -56,7 +56,7 @@ impl<T> const Value for NoCumulant<T> {
     fn need_update() -> bool { false }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WithCumulant<T, C, F: Fn(&mut C, &T, [Option<&C>; 2])>(T, C, F);
 impl<T, C, F: Fn(&mut C, &T, [Option<&C>; 2])> const Value for WithCumulant<T, C, F> {
     type Local = T;

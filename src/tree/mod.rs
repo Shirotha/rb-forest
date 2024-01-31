@@ -192,11 +192,11 @@ impl<K: Ord, V: Value> Tree<K, V> {
         {
             let grandparent_node = &tree[grandparent];
             // SAFETY: tree is balanced, so nodes on parent level cannot be null
-            let uncle = grandparent_node.children[I].unwrap();
-            let uncle_node = &mut tree[uncle];
-            if uncle_node.is_red() {
+            let uncle = grandparent_node.children[I];
+            if uncle.is_some_and( |uncle| tree[uncle].is_red() ) {
                 // Case 3.1
-                uncle_node.color = Color::Black;
+                // SAFETY: check in surrounding if
+                tree[uncle.unwrap()].color = Color::Black;
                 tree[parent].color = Color::Black;
                 tree[grandparent].color = Color::Red;
                 ptr = grandparent;

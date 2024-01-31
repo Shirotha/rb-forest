@@ -77,10 +77,10 @@ pub trait Writer<T, E>: Reader<T> {
 }
 
 #[derive(Debug)]
-pub struct OwnedForest<K: Ord, V: Value> {
+pub struct WeakForest<K: Ord, V: Value> {
     free_port: Port<Node<K, V>, Bounds>,
 }
-impl<K: Ord, V: Value> OwnedForest<K, V> {
+impl<K: Ord, V: Value> WeakForest<K, V> {
     #[inline]
     pub fn new() -> Self {
         Self { free_port: Arena::new().into_port(Bounds::default()) }
@@ -90,7 +90,7 @@ impl<K: Ord, V: Value> OwnedForest<K, V> {
         Self { free_port: Arena::with_capacity(capacity).into_port(Bounds::default()) }
     }
     #[inline]
-    pub fn insert(&self) -> Tree<K, V> {
+    pub fn insert(&mut self) -> Tree<K, V> {
         Tree::new(self.free_port.split_with_meta(Bounds::default()))
     }
     /// # Safety
@@ -98,16 +98,60 @@ impl<K: Ord, V: Value> OwnedForest<K, V> {
     ///
     /// For a safe version of this function use the 'sorted-iter' feature.
     #[inline]
-    pub unsafe fn insert_sorted_iter_unchecked(&self, iter: impl IntoIterator<Item = (K, V)>) -> Tree<K, V> {
+    pub unsafe fn insert_sorted_iter_unchecked(&mut self, iter: impl IntoIterator<Item = (K, V)>) -> Tree<K, V> {
         Tree::from_sorted_iter_unchecked(self.free_port.split_with_meta(Bounds::default()), iter)
     }
     #[cfg(feature = "sorted-iter")]
     #[inline]
-    pub fn insert_sorted_iter(&self, iter: impl IntoIterator<Item = (K, V)> + SortedByKey) -> Tree<K, V> {
+    pub fn insert_sorted_iter(&mut self, iter: impl IntoIterator<Item = (K, V)> + SortedByKey) -> Tree<K, V> {
         Tree::from_sorted_iter(self.free_port.split_with_meta(Bounds::default()), iter)
     }
 }
-impl<K: Ord, V: Value> Default for OwnedForest<K, V> {
+impl<K: Ord, V: Value> Default for WeakForest<K, V> {
     #[inline(always)]
     fn default() -> Self { Self::new() }
+}
+
+pub mod prelude {
+    pub use crate::{
+        WeakForest,
+        tree::{NoCumulant, WithCumulant}
+    };
+}
+
+#[cfg(test)]
+mod test {
+    use crate::prelude::*;
+
+    #[test]
+    fn insert_remove() {
+        let mut forest = WeakForest::new();
+        let mut tree = forest.insert();
+        {
+            let mut alloc = tree.alloc();
+            alloc.insert(1, NoCumulant(42));
+            let value = alloc.remove(1);
+            assert_eq!(value, Some(NoCumulant(42)));
+        }
+    }
+
+    #[test]
+    fn iter() {
+        let mut values = vec![-10, 2, 0, 3];
+        let mut forest = WeakForest::with_capacity(values.len());
+        let mut tree = forest.insert();
+        {
+            let mut alloc = tree.alloc();
+            for x in values.iter().copied() {
+                // FIXME: insertion failing (indices moved wrong?)
+                alloc.insert(x, NoCumulant(x));
+            }
+        }
+        values.sort_unstable();
+        {
+            let read = tree.read();
+            let result = read.iter().map( |(_, v)| v.0 ).collect::<Vec<_>>();
+            assert_eq!(&values, &result);
+        }
+    }
 }
