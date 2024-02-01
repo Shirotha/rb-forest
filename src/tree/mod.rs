@@ -34,8 +34,8 @@ pub enum Error {
     Arena(#[from] ArenaError)
 }
 
-#[derive(Debug)]
-enum SearchResult<T> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchResult<T> {
     Empty,
     LeftOf(T),
     Here(T),
@@ -43,13 +43,24 @@ enum SearchResult<T> {
 }
 impl<T> SearchResult<T> {
     #[inline]
-    fn into_here(self) -> Option<T> {
+    pub fn into_here(self) -> Option<T> {
         let Self::Here(value) = self else { return None };
         Some(value)
     }
     #[inline(always)]
-    fn is_here(&self) -> bool {
+    pub fn is_here(&self) -> bool {
         matches!(self, Self::Here(_))
+    }
+    #[inline]
+    pub fn map<R, F>(self, f: F) -> SearchResult<R>
+        where F: FnOnce(T) -> R
+    {
+        match self {
+            Self::Here(value) => SearchResult::Here(f(value)),
+            Self::LeftOf(value) => SearchResult::LeftOf(f(value)),
+            Self::RightOf(value) => SearchResult::RightOf(f(value)),
+            Self::Empty => SearchResult::Empty
+        }
     }
 }
 
@@ -132,32 +143,46 @@ impl<K: Ord, V: Value> Tree<K, V> {
     }
     /// # Safety
     /// The node pointer has to be owned by tree.
-    #[inline]
-    unsafe fn search(mut ptr: NodeRef, key: &K,
+    #[inline(always)]
+    unsafe fn search(ptr: NodeRef, key: &K,
         tree: &impl TreeReader<K, V>
     ) -> SearchResult<NodeIndex> {
+        // SAFETY: ordering is guarantied by definition
+        Self::search_by(ptr, |node| node.key.cmp(key), tree)
+    }
+    /// The result of this is meaningless,
+    /// unless the tree is ordered by `compare`
+    ///
+    /// # Safety
+    /// The node pointer has to be owned by tree.
+    #[inline]
+    unsafe fn search_by<F>(mut ptr: NodeRef, compare: F,
+        tree: &impl TreeReader<K, V>
+    ) -> SearchResult<Index>
+        where F: Fn(&Node<K, V>) -> Ordering
+    {
         let [Some(min), Some(max)] = tree.meta().range
             else { return SearchResult::Empty };
-        match key.cmp(&tree[min].key) {
-            Ordering::Less => return SearchResult::LeftOf(min),
+        match compare(&tree[min]) {
+            Ordering::Greater => return SearchResult::LeftOf(min),
             Ordering::Equal => return SearchResult::Here(min),
             _ => ()
         }
-        match key.cmp(&tree[max].key) {
-            Ordering::Greater => return SearchResult::RightOf(max),
+        match compare(&tree[max]) {
+            Ordering::Less => return SearchResult::RightOf(max),
             Ordering::Equal => return SearchResult::Here(max),
             _ => ()
         }
         let (mut parent, mut left) = (None, false);
-        while let Some(valid) = ptr {
+        while let Some(index) = ptr {
             parent = ptr;
-            let node = &tree[valid];
-            match node.key.cmp(key) {
+            let node = &tree[index];
+            match compare(node) {
                 Ordering::Greater => {
                     left = true;
                     ptr = node.children[0];
                 },
-                Ordering::Equal => return SearchResult::Here(valid),
+                Ordering::Equal => return SearchResult::Here(index),
                 Ordering::Less => {
                     left = false;
                     ptr = node.children[1];

@@ -1,4 +1,7 @@
-use std::ops::RangeInclusive;
+use std::{
+    ops::RangeInclusive,
+    cmp::Ordering
+};
 
 use crate::{
     Reader, Writer,
@@ -6,7 +9,11 @@ use crate::{
         Meta, MetaMut,
         PortReadGuard, PortWriteGuard, PortAllocGuard
     },
-    tree::{Bounds, Color, Error, Node, NodeIndex, SearchResult, Tree, Value}
+    tree::{
+        Error, Bounds, Tree, SearchResult,
+        Node, NodeIndex,
+        Value, Color
+    }
 };
 
 impl<K: Ord, V: Value> Tree<K, V> {
@@ -208,7 +215,7 @@ macro_rules! impl_Writer {
 impl_Writer!(TreeWriteGuard);
 impl_Writer!(TreeAllocGuard);
 
-macro_rules! impl_Bounds {
+macro_rules! impl_ReadOnly {
     ( $type:ident ) => {
         impl<'a, K: Ord, V: Value> $type <'a, K, V> {
             #[inline(always)]
@@ -234,9 +241,26 @@ macro_rules! impl_Bounds {
                 let [Some(min), Some(max)] = self.0.meta().range else { return None };
                 Some((&self.0[min].key)..=(&self.0[max].key))
             }
+            /// Searches the tree using the given comparison function.
+            /// The tree has to be sorted by compare or the result of this are meaningless.
+            ///
+            /// This behavious like the standard libary binary search for slices.
+            #[inline]
+            pub fn search_by<F>(&self, compare: F) -> SearchResult<&K>
+                where F: Fn(&K, &V) -> Ordering
+            {
+                // SAFETY: root is part of tree
+                unsafe {
+                    Tree::search_by(
+                        self.0.meta().root,
+                        |node| compare(&node.key, &node.value) ,
+                        &self.0
+                    ).map( |index| &self.0[index].key )
+                }
+            }
         }
     };
 }
-impl_Bounds!(TreeReadGuard);
-impl_Bounds!(TreeWriteGuard);
-impl_Bounds!(TreeAllocGuard);
+impl_ReadOnly!(TreeReadGuard);
+impl_ReadOnly!(TreeWriteGuard);
+impl_ReadOnly!(TreeAllocGuard);

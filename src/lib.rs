@@ -115,12 +115,17 @@ impl<K: Ord, V: Value> Default for WeakForest<K, V> {
 pub mod prelude {
     pub use crate::{
         WeakForest,
-        tree::{NoCumulant, WithCumulant}
+        tree::{
+            NoCumulant, WithCumulant,
+            SearchResult
+        }
     };
 }
 
 #[cfg(test)]
 mod test {
+    use sorted_iter::assume::AssumeSortedByKeyExt;
+
     use crate::prelude::*;
 
     #[test]
@@ -134,7 +139,6 @@ mod test {
             assert_eq!(value, Some(NoCumulant(42)));
         }
     }
-
     #[test]
     fn iter() {
         let mut values = vec![1, 7, 8, 9, 10, 6, 5, 2, 3, 4, 0, 11];
@@ -152,6 +156,21 @@ mod test {
             let read = tree.read();
             let result = read.iter().map( |(_, v)| v.0 ).collect::<Vec<_>>();
             assert_eq!(&values, &result);
+        }
+    }
+    #[cfg(feature = "sorted-iter")]
+    #[test]
+    fn search() {
+        let mut forest = WeakForest::with_capacity(10);
+        let tree = forest.insert_sorted_iter(
+            (0..10)
+                .map( |i| (i, NoCumulant(10 + i)) )
+                .assume_sorted_by_key()
+        );
+        {
+            let read = tree.read();
+            let key = read.search_by( |_, v| v.0.cmp(&14) );
+            assert_eq!(key, SearchResult::Here(&4));
         }
     }
 }
