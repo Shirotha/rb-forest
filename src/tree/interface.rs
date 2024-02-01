@@ -39,7 +39,8 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
     }
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> bool {
-        match Tree::search(self.0.meta().root, &key, &self.0) {
+        // SAFETY: root is a node in tree
+        match unsafe { Tree::search(self.0.meta().root, &key, &self.0) } {
             SearchResult::Here(ptr) => {
                 self.0[ptr].value = value;
                 return false;
@@ -69,6 +70,7 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
     #[inline]
     pub(crate) unsafe fn insert_node(&mut self, ptr: NodeIndex) -> Result<(), Error> {
         let key = &self.0[ptr].key;
+        // SAFETY: root is a node in tree
         match Tree::search(self.0.meta().root, key, &self.0) {
             SearchResult::Here(_) => return Err(Error::DuplicateKey),
             SearchResult::Empty => {
@@ -88,7 +90,8 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
     }
     #[inline]
     pub fn remove(&mut self, key: K) -> Option<V> {
-        match Tree::search(self.0.meta().root, &key, &self.0) {
+        // SAFETY: root is a node in tree
+        match unsafe { Tree::search(self.0.meta().root, &key, &self.0) } {
             SearchResult::Here(ptr) => {
                 // SAFETY: node is the result of a search in tree
                 unsafe { Tree::remove_at(ptr, &mut self.0); }
@@ -126,14 +129,16 @@ macro_rules! impl_Reader {
             type Item = V;
             #[inline]
             fn get(&self, key: &K) -> Option<&V> {
-                match Tree::search(self.0.meta().root, key, &self.0) {
-                    SearchResult::Here(ptr) => Some(&self.0[ptr].value),
-                    _ => None
-                }
+                // SAFETY: root is a node in tree
+                let ptr = unsafe { Tree::search(self.0.meta().root, key, &self.0) }
+                    .into_here()?;
+                Some(&self.0[ptr].value)
             }
             #[inline]
             fn contains(&self, key: &K) -> bool {
-                matches!(Tree::search(self.0.meta().root, key, &self.0), SearchResult::Here(_))
+                // SAFETY: root is a node in tree
+                unsafe { Tree::search(self.0.meta().root, key, &self.0) }
+                    .is_here()
             }
         }
     };
@@ -147,10 +152,10 @@ macro_rules! impl_Writer {
         impl<'a, K: Ord, V: Value> Writer<&K, Error> for $type <'a, K, V> {
             #[inline]
             fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-                match Tree::search(self.0.meta().root, key, &self.0) {
-                    SearchResult::Here(ptr) => Some(&mut self.0[ptr].value),
-                    _ => None
-                }
+                // SAFETY: root is a node in tree
+                let ptr = unsafe { Tree::search(self.0.meta().root, key, &self.0) }
+                    .into_here()?;
+                Some(&mut self.0[ptr].value)
             }
             #[inline]
             fn get_pair_mut(&mut self, a: &K, b: &K) -> Result<[Option<&mut V>; 2], Error> {
@@ -158,8 +163,9 @@ macro_rules! impl_Writer {
                     return Err(Error::KeyAlias);
                 }
                 let root = self.0.meta().root;
-                let a = Tree::search(root, a, &self.0);
-                let b = Tree::search(root, b, &self.0);
+                // SAFETY: root is a node in tree
+                let a = unsafe { Tree::search(root, a, &self.0) };
+                let b = unsafe { Tree::search(root, b, &self.0) };
                 match (a, b) {
                     (SearchResult::Here(a), SearchResult::Here(b)) => {
                         // SAFETY: a and b are checked before this
@@ -180,8 +186,12 @@ macro_rules! impl_Writer {
                     return Err(Error::KeyAlias)
                 }
                 let root = self.0.meta().root;
-                if let SearchResult::Here(x) = Tree::search(root, key, &self.0) {
-                    let others = others.map( |k| k.and_then( |k| Tree::search(root, k, &self.0).into_here() ) );
+                // SAFETY: root is a node in tree
+                if let SearchResult::Here(x) = unsafe { Tree::search(root, key, &self.0) } {
+                    let others = others.map( |k| k.and_then( |k|
+                        unsafe { Tree::search(root, k, &self.0) }
+                            .into_here()
+                    ) );
                     // SAFETY: all keys are checked before this
                     let (x, others) = self.0.get_mut_with(x, others).unwrap();
                     Ok((

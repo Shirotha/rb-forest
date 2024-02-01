@@ -47,6 +47,10 @@ impl<T> SearchResult<T> {
         let Self::Here(value) = self else { return None };
         Some(value)
     }
+    #[inline(always)]
+    fn is_here(&self) -> bool {
+        matches!(self, Self::Here(_))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -81,7 +85,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
         node.value.update_cumulant([left, right]);
     }
     /// # Safety
-    ///
     /// The node pointer has to be owned by tree.
     #[inline]
     unsafe fn propagate_cumulant(ptr: NodeIndex,
@@ -127,10 +130,24 @@ impl<K: Ord, V: Value> Tree<K, V> {
             tree.meta_mut().root = Some(pivot);
         }
     }
+    /// # Safety
+    /// The node pointer has to be owned by tree.
     #[inline]
-    fn search(mut ptr: NodeRef, key: &K,
+    unsafe fn search(mut ptr: NodeRef, key: &K,
         tree: &impl TreeReader<K, V>
     ) -> SearchResult<NodeIndex> {
+        let [Some(min), Some(max)] = tree.meta().range
+            else { return SearchResult::Empty };
+        match key.cmp(&tree[min].key) {
+            Ordering::Less => return SearchResult::LeftOf(min),
+            Ordering::Equal => return SearchResult::Here(min),
+            _ => ()
+        }
+        match key.cmp(&tree[max].key) {
+            Ordering::Greater => return SearchResult::RightOf(max),
+            Ordering::Equal => return SearchResult::Here(max),
+            _ => ()
+        }
         let (mut parent, mut left) = (None, false);
         while let Some(valid) = ptr {
             parent = ptr;
@@ -147,13 +164,13 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 }
             }
         }
-        if let Some(parent) = parent {
-            if left {
-                SearchResult::LeftOf(parent)
-            } else {
-                SearchResult::RightOf(parent)
-            }
-        } else { SearchResult::Empty }
+        // SAFETY: this could only fail for empty tees, which are handled separatly
+        let parent = unsafe { parent.unwrap_unchecked() };
+        if left {
+            SearchResult::LeftOf(parent)
+        } else {
+            SearchResult::RightOf(parent)
+        }
     }
     // TODO: propagate cumulants after insert/delete
     /// # Safety
@@ -264,7 +281,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
         tree[root].color = Color::Black
     }
     /// # Safety
-    ///
     /// The node pointer has to be owned by tree.
     #[inline]
     unsafe fn remove_at(ptr: NodeIndex,
@@ -442,8 +458,10 @@ impl<K: Ord, V: Value> Tree<K, V> {
         }
         ptr
     }
+    /// # Safety
+    /// The node pointer has to be owned by tree.
     #[inline]
-    fn closest<const I: usize, const INCLUSIVE: bool>(ptr: NodeRef, key: &K,
+    unsafe fn closest<const I: usize, const INCLUSIVE: bool>(ptr: NodeRef, key: &K,
         tree: &impl TreeReader<K, V>
     ) -> NodeRef
         where [(); 1 - I]:

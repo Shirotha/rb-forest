@@ -156,12 +156,15 @@ macro_rules! impl_Iter {
             }
             #[inline]
             pub fn iter_range<const LI: bool, const RI: bool>(&self, min: &K, max: &K) -> Iter<K, V, impl TreeReader<K, V> + 'a> {
-                let meta = self.0.meta();
-                let front = Tree::closest::<0, LI>(meta.root, min, &self.0)
-                    .or_else( || meta.range[0] );
-                let back = Tree::closest::<1, RI>(meta.root, max, &self.0)
-                    .or_else( || meta.range[1] );
-                Iter { tree: &self.0, front, back, _phantom: PhantomData }
+                // SAFETY: root is a node in tree
+                unsafe {
+                    let meta = self.0.meta();
+                    let front = Tree::closest::<0, LI>(meta.root, min, &self.0)
+                        .or_else( || meta.range[0] );
+                    let back = Tree::closest::<1, RI>(meta.root, max, &self.0)
+                        .or_else( || meta.range[1] );
+                    Iter { tree: &self.0, front, back, _phantom: PhantomData }
+                }
             }
         }
     };
@@ -180,12 +183,15 @@ macro_rules! impl_IterMut {
             }
             #[inline]
             pub fn iter_range_mut<const LI: bool, const RI: bool>(&mut self, min: &K, max: &K) -> IterMut<K, V, impl TreeWriter<K, V> + 'a> {
-                let meta = self.0.meta();
-                let front = Tree::closest::<0, LI>(meta.root, min, &self.0)
-                    .or_else( || meta.range[0] );
-                let back = Tree::closest::<1, RI>(meta.root, max, &self.0)
-                    .or_else( || meta.range[1] );
-                IterMut { tree: &mut self.0, front, back, _phantom: PhantomData }
+                // SAFETY: root is a node in tree
+                unsafe {
+                    let meta = self.0.meta();
+                    let front = Tree::closest::<0, LI>(meta.root, min, &self.0)
+                        .or_else( || meta.range[0] );
+                    let back = Tree::closest::<1, RI>(meta.root, max, &self.0)
+                        .or_else( || meta.range[1] );
+                    IterMut { tree: &mut self.0, front, back, _phantom: PhantomData }
+                }
             }
         }
     };
