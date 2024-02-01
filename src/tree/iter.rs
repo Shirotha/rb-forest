@@ -304,6 +304,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             meta.root = root;
             meta.range = [min, max];
             meta.len = len;
+            meta.black_height = ((height + 1) >> 1) as u8;
         }
         Self { port }
     }

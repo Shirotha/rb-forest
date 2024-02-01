@@ -50,6 +50,12 @@ impl<T, M> Port<T, M> {
         let port = self.1.write();
         PortAllocGuard { arena, port }
     }
+    /// # Safety
+    /// This assumes that no nodes are associated with this port
+    #[inline]
+    pub unsafe fn free(self) -> M {
+        self.1.into_inner()
+    }
 }
 
 #[derive(Debug)]

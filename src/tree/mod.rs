@@ -31,7 +31,9 @@ pub enum Error {
     #[error("keys have to be pairwise different")]
     KeyAlias,
     #[error(transparent)]
-    Arena(#[from] ArenaError)
+    Arena(#[from] ArenaError),
+    #[error("can only join disjoint trees")]
+    Overlapping
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +70,8 @@ impl<T> SearchResult<T> {
 pub struct Bounds {
     root: NodeRef,
     range: [NodeRef; 2],
-    len: usize
+    len: usize,
+    black_height: u8
 }
 
 #[derive(Debug)]
@@ -301,9 +304,12 @@ impl<K: Ord, V: Value> Tree<K, V> {
             if Some(ptr) == tree.meta().root { break }
         }
         // SAFETY: tree is not empty
-        // NOTE: remove when adding join
         let root = tree.meta().root.unwrap();
-        tree[root].color = Color::Black
+        let root = &mut tree[root];
+        if root.is_red() {
+            root.color = Color::Black;
+            tree.meta_mut().black_height += 1;
+        }
     }
     /// # Safety
     /// The node pointer has to be owned by tree.
@@ -362,13 +368,15 @@ impl<K: Ord, V: Value> Tree<K, V> {
             // SAFETY: search was successful, so tree cannot be empty
             Self::fix_remove(fix, tree)
         }
-        if let (Some(parent), true) = (parent, V::need_update()) {
-            Self::propagate_cumulant(parent, tree);
+        if let Some(parent) = parent {
+            if V::need_update() {
+                Self::propagate_cumulant(parent, tree);
+            }
+        } else {
+            tree.meta_mut().black_height -= 1;
         }
     }
     /// # Safety
-    /// The child pointer has to be a child node of the given node.
-    ///
     /// The node pointers hve to be owned by tree.
     #[inline]
     unsafe fn transplant(ptr: NodeIndex, child: NodeRef,
@@ -502,6 +510,117 @@ impl<K: Ord, V: Value> Tree<K, V> {
             SearchResult::RightOf(node) =>
                 if I == 1 { Some(node) }
                 else { tree[node].order[0] }
+        }
+    }
+    /// # Safety
+    /// The pivot will be moved into this tree and should not be referenced by any other tree after this.
+    ///
+    /// `a->max->key < pivot->key < b->min->key` (this is reversed for I == 1)
+    #[inline]
+    unsafe fn join_unchecked<const I: usize>(
+        this: &mut impl TreeWriter<K, V>,
+        pivot: NodeIndex, that: Port<Node<K, V>, Bounds>
+    ) where [(); 1 - I]: {
+        #[inline]
+        unsafe fn helper<const I: usize, K: Ord, V: Value>(
+            this: &mut impl TreeWriter<K, V>,
+            parent: NodeRef, this_child: NodeRef,
+            pivot: NodeIndex, that_meta: Bounds
+        ) where [(); 1 - I]: {
+            let ptr = Some(pivot);
+            let this_meta = *this.meta();
+            let pivot_node = &mut this[pivot];
+            pivot_node.color = Color::Red;
+            pivot_node.parent = parent;
+            let mut children = [None; 2];
+            children[I] = this_child;
+            children[1 - I] = that_meta.root;
+            pivot_node.children = children;
+            let mut order = [None; 2];
+            order[I] = this_meta.range[1 - I];
+            order[1 - I] = that_meta.range[I];
+            pivot_node.order = order;
+            discard! {
+                this[this_child?].parent = ptr
+            };
+            discard! {
+                this[that_meta.root?].parent = ptr
+            };
+            discard! {
+                this[this_meta.range[1 - I]?].order[1 - I] = ptr
+            };
+            discard! {
+                this[that_meta.range[I]?].order[I] = ptr
+            };
+            let this_meta = this.meta_mut();
+            this_meta.range[1 - I] = that_meta.range[1 - I];
+            if let Some(parent) = parent {
+                if this[parent].parent.is_some() {
+                    Tree::fix_insert(pivot, this);
+                }
+            } else {
+                this_meta.root = ptr;
+            }
+            if V::need_update() {
+                Tree::propagate_cumulant(pivot, this);
+            }
+        }
+        let ptr = Some(pivot);
+        let this_meta = this.meta();
+        let that_meta = that.free();
+        // SAFETY: this is never negative
+        let mut diff = this_meta.black_height - that_meta.black_height;
+        if diff == 0 {
+            // TODO: put this in a helper function to use after doing merge aswell
+            helper::<I, K, V>(this, None, this_meta.root, pivot, that_meta);
+            return;
+        }
+        // SAFETY: at this point this treee cannot be empty
+        let mut index = this_meta.root.unwrap();
+        while diff != 0 {
+            let node = &this[index];
+            if node.is_black() {
+                diff -= 1;
+            }
+            if diff == 0 { break; }
+            if let Some(next) = node.children[1 - I] {
+                index = next;
+            } else {
+                // SAFETY: join point will be found before node is null
+                index = node.children[I].unwrap();
+            }
+        }
+        Self::transplant(index, ptr, this);
+        helper::<I, K, V>(this, this[index].parent, Some(index), pivot, that_meta);
+    }
+    /// # Safety
+    /// The pivot will be moved into this tree and should not be referenced by any other tree after this.
+    #[inline]
+    unsafe fn join(mut self, pivot: NodeIndex, mut other: Self) -> Result<Self, ((Self, Self), Error)> {
+        let this = self.write();
+        if this.is_empty() {
+            other.alloc().insert_node(pivot);
+            return Ok(other);
+        }
+        let that = other.write();
+        if that.is_empty() {
+            drop(this);
+            self.alloc().insert_node(pivot);
+            return Ok(self);
+        }
+        let center = &this.0[pivot].key;
+        // SAFETY: both trees are not empty here
+        if this.max().unwrap() < center
+            && center < that.min().unwrap()
+        {
+            todo!("this < pivot < that");
+        } else if that.max().unwrap() < center
+            && center < this.min().unwrap()
+        {
+            todo!("that < pivot < this");
+        } else {
+            drop((this, that));
+            Err(((self, other), Error::Overlapping))
         }
     }
 }
