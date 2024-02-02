@@ -70,7 +70,6 @@ impl<T> SearchResult<T> {
 pub struct Bounds {
     root: NodeRef,
     range: [NodeRef; 2],
-    len: usize,
     black_height: u8
 }
 
@@ -200,7 +199,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
             SearchResult::RightOf(parent)
         }
     }
-    // TODO: propagate cumulants after insert/delete
     /// # Safety
     /// The node at `ptr->children[I]` cannot be None.
     ///
@@ -512,6 +510,9 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 else { tree[node].order[0] }
         }
     }
+    /// # Note
+    /// There is no fast-pass for empty trees, that should be checked by the caller.
+    ///
     /// # Safety
     /// The pivot will be moved into this tree and should not be referenced by any other tree after this.
     ///
@@ -571,7 +572,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
         // SAFETY: this is never negative
         let mut diff = this_meta.black_height - that_meta.black_height;
         if diff == 0 {
-            // TODO: put this in a helper function to use after doing merge aswell
             helper::<I, K, V>(this, None, this_meta.root, pivot, that_meta);
             return;
         }
@@ -593,31 +593,47 @@ impl<K: Ord, V: Value> Tree<K, V> {
         Self::transplant(index, ptr, this);
         helper::<I, K, V>(this, this[index].parent, Some(index), pivot, that_meta);
     }
+    /// # Note
+    /// There is no fast-pass for empty trees, that should be checked by the caller.
+    ///
     /// # Safety
     /// The pivot will be moved into this tree and should not be referenced by any other tree after this.
+    // TODO: make the compiler realize it can automatically drop this/that
     #[inline]
     unsafe fn join(mut self, pivot: NodeIndex, mut other: Self) -> Result<Self, ((Self, Self), Error)> {
-        let this = self.write();
-        if this.is_empty() {
-            other.alloc().insert_node(pivot);
-            return Ok(other);
-        }
-        let that = other.write();
-        if that.is_empty() {
-            drop(this);
-            self.alloc().insert_node(pivot);
-            return Ok(self);
-        }
+        let mut this = self.write();
+        let mut that = other.write();
         let center = &this.0[pivot].key;
+        // FIXME: apparently they are
         // SAFETY: both trees are not empty here
         if this.max().unwrap() < center
             && center < that.min().unwrap()
         {
-            todo!("this < pivot < that");
+            if this.0.meta().black_height >= that.0.meta().black_height {
+                drop(that);
+                Self::join_unchecked::<0>(&mut this.0, pivot, other.port);
+                drop(this);
+                Ok(self)
+            } else {
+                drop(this);
+                Self::join_unchecked::<1>(&mut that.0, pivot, self.port);
+                drop(that);
+                Ok(other)
+            }
         } else if that.max().unwrap() < center
             && center < this.min().unwrap()
         {
-            todo!("that < pivot < this");
+            if this.0.meta().black_height >= that.0.meta().black_height {
+                drop(that);
+                Self::join_unchecked::<1>(&mut this.0, pivot, other.port);
+                drop(this);
+                Ok(self)
+            } else {
+                drop(this);
+                Self::join_unchecked::<0>(&mut that.0, pivot, self.port);
+                drop(that);
+                Ok(other)
+            }
         } else {
             drop((this, that));
             Err(((self, other), Error::Overlapping))

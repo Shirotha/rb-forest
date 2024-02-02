@@ -158,6 +158,19 @@ mod test {
             assert_eq!(&values, &result);
         }
     }
+    #[test]
+    fn join() {
+        let mut forest = WeakForest::with_capacity(20);
+        let even = unsafe { forest.insert_sorted_iter_unchecked(
+            (0..10).map( |n| (2*n, NoCumulant(n)) )
+        ) };
+        let odd = unsafe { forest.insert_sorted_iter_unchecked(
+            (0..10).map( |n| (2*n+1, NoCumulant(n)) )
+        ) };
+        let all = odd.union(even);
+        let (lower, pivot, upper) = all.split(&5);
+        assert_eq!(pivot, Some(NoCumulant(5)));
+    }
     #[cfg(feature = "sorted-iter")]
     #[test]
     fn search() {

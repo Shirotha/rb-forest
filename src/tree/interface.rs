@@ -1,6 +1,7 @@
 use std::{
-    ops::RangeInclusive,
-    cmp::Ordering
+    cmp::Ordering,
+    mem::take,
+    ops::RangeInclusive
 };
 
 use crate::{
@@ -11,7 +12,7 @@ use crate::{
     },
     tree::{
         Error, Bounds, Tree, SearchResult,
-        Node, NodeIndex,
+        Node, NodeIndex, NodeRef,
         Value, Color
     }
 };
@@ -28,6 +29,199 @@ impl<K: Ord, V: Value> Tree<K, V> {
     #[inline]
     pub fn alloc(&mut self) -> TreeAllocGuard<K, V> {
         TreeAllocGuard(self.port.alloc())
+    }
+    #[inline]
+    pub fn union_disjoint(mut self, mut other: Self) -> Result<Self, ((Self, Self), Error)> {
+        {
+            let this = self.read();
+            match this.len_estimate() {
+                LenEstimate::Empty => return Ok(other),
+                LenEstimate::Single => {
+                    let mut write = other.write();
+                    // SAFETY: the root is the only node
+                    unsafe { write.insert_node(this.0.meta().root.unwrap()).unwrap_unchecked() };
+                    drop(write);
+                    return Ok(other);
+                },
+                _ => ()
+            }
+        }
+        {
+            let that = other.read();
+            match that.len_estimate() {
+                LenEstimate::Empty => return Ok(self),
+                LenEstimate::Single => {
+                    let mut write = self.write();
+                    // SAFETY: the root is the only node
+                    unsafe { write.insert_node(that.0.meta().root.unwrap()).unwrap_unchecked() };
+                    drop(write);
+                    return Ok(self);
+                },
+                _ => ()
+            }
+        }
+        let mut this = self.write();
+        let that = other.read();
+        // SAFETY: this is not an empty tree
+        let pivot = if this.min() < that.min() {
+            if this.max() >= that.min() {
+                drop((this, that));
+                return Err(((self, other), Error::Overlapping))
+            }
+            unsafe { this.0.meta().range[1].unwrap_unchecked() }
+        } else {
+            if that.max() >= this.min() {
+                drop((this, that));
+                return Err(((self, other), Error::Overlapping))
+            }
+            unsafe { this.0.meta().range[0].unwrap_unchecked() }
+        };
+        // SAFETY: pivot was retrived from this tree
+        unsafe { this.remove_node(pivot); }
+        drop((this, that));
+        // SAFETY: checks were done before this
+        Ok(unsafe { self.join(pivot, other).unwrap_unchecked() })
+    }
+    #[inline]
+    pub fn union(mut self, mut other: Self) -> Self {
+        {
+            let this = self.read();
+            match this.len_estimate() {
+                LenEstimate::Empty => return other,
+                LenEstimate::Single => {
+                    let mut write = other.write();
+                    // SAFETY: the root is the only node
+                    unsafe { write.insert_node(this.0.meta().root.unwrap()).unwrap_unchecked() };
+                    drop(write);
+                    return other;
+                },
+                _ => ()
+            }
+        }
+        {
+            let that = other.read();
+            match that.len_estimate() {
+                LenEstimate::Empty => return self,
+                LenEstimate::Single => {
+                    let mut write = self.write();
+                    // SAFETY: the root is the only node
+                    unsafe { write.insert_node(that.0.meta().root.unwrap()).unwrap_unchecked() };
+                    drop(write);
+                    return self;
+                },
+                _ => ()
+            }
+        }
+        // SAFETY: other is not empty
+        let (other_left, Some(other_root), other_right) = other.split_at_root()
+            else { panic!() };
+        // NOTE: pivot will only be non-null when pivot->key == other_root->key
+        let (left, _pivot, right) = {
+            let read = other_left.read();
+            let node = &read.0[other_root];
+            self.split_node(&node.key)
+        };
+        let left = left.union(other_left);
+        let right = right.union(other_right);
+        // SAFETY: left and right are disjoint by other_root by construction
+        unsafe { Self::join(left, other_root, right).unwrap_unchecked() }
+    }
+    #[inline]
+    pub(crate) fn split_at_root(mut self) -> (Self, NodeRef, Self) {
+        let mut write = self.write();
+        let Some(index) = write.0.meta().root
+            else {
+                drop(write);
+                let port = self.port.split_with_meta(Bounds::default());
+                return (self, None, Tree::new(port));
+            };
+        let node = &mut write.0[index];
+        let children = take(&mut node.children);
+        let order = take(&mut node.order);
+        let left_bounds = write.0.meta_mut();
+        let mut right_bounds = *left_bounds;
+        left_bounds.root = children[0];
+        left_bounds.range[1] = order[0];
+        if let Some(root) = left_bounds.root {
+            let root = &mut write.0[root];
+            if root.is_red() {
+                root.color = Color::Black;
+            } else {
+                write.0.meta_mut().black_height -= 1;
+            }
+        }
+        right_bounds.root = children[1];
+        right_bounds.range[0] = order[1];
+        if let Some(root) = right_bounds.root {
+            let root = &mut write.0[root];
+            if root.is_red() {
+                root.color = Color::Black;
+            } else {
+                right_bounds.black_height -= 1;
+            }
+        }
+        drop(write);
+        let port = self.port.split_with_meta(right_bounds);
+        (self, Some(index), Tree::new(port))
+    }
+    #[inline]
+    pub(crate) fn split_node(mut self, key: &K) -> (Self, NodeRef, Self) {
+        let mut write = self.write();
+        if write.is_empty() {
+            drop(write);
+            let port = self.port.split_with_meta(Bounds::default());
+            let other = Tree::new(port);
+            return (self, None, other);
+        }
+        // SAFETY: tree is not empty
+        let index = write.0.meta().root.unwrap();
+        let node = &mut write.0[index];
+        let cmp = node.key.cmp(key);
+        match cmp {
+            Ordering::Equal => {
+                drop(write);
+                self.split_at_root()
+            },
+            order => {
+                if write.is_single() {
+                    drop(write);
+                    let port = self.port.split_with_meta(Bounds::default());
+                    let other = Tree::new(port);
+                    if order.is_lt() {
+                        return (self, None, other);
+                    } else {
+                        return (other, None, self)
+                    }
+                }
+                drop(write);
+                // SAFETY: tree is not empty
+                let (left, Some(root), right) = self.split_at_root()
+                    else { panic!() };
+                if order.is_lt() {
+                    let (left, left_child, center) = left.split_node(key);
+                    // SAFETY: center and right are disjoint by construction
+                    let right = unsafe { Self::join(center, root, right).unwrap_unchecked() };
+                    (left, left_child, right)
+                } else {
+                    let (center, right_child, right) = right.split_node(key);
+                    // SAFETY: left and center are disjoint by construction
+                    let left = unsafe { Self::join(left, root, center).unwrap_unchecked() };
+                    (left, right_child, right)
+                }
+            }
+        }
+
+    }
+    #[inline]
+    pub fn split(self, key: &K) -> (Self, Option<V>, Self) {
+        let (mut left, pivot, right) = self.split_node(key);
+        let value = if let Some(index) = pivot {
+            let mut alloc = left.alloc();
+            // SAFETY: pivot belongs to the original tree
+            let node = unsafe { alloc.0.remove(index).unwrap_unchecked() };
+            Some(node.value)
+        } else { None };
+        (left, value, right)
     }
 }
 
@@ -71,30 +265,6 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
         }
         true
     }
-    /// # Safety
-    /// Calling this function implicitly moves the node pointer into this tree,
-    /// using the same pointer in a different tree is undefined behaviour.
-    #[inline]
-    pub(crate) unsafe fn insert_node(&mut self, ptr: NodeIndex) -> Result<(), Error> {
-        let key = &self.0[ptr].key;
-        // SAFETY: root is a node in tree
-        match Tree::search(self.0.meta().root, key, &self.0) {
-            SearchResult::Here(_) => return Err(Error::DuplicateKey),
-            SearchResult::Empty => {
-                // Case 1
-                let meta = self.0.meta_mut();
-                meta.root = Some(ptr);
-                meta.range = [Some(ptr), Some(ptr)];
-            },
-            SearchResult::LeftOf(parent) =>
-                // SAFETY: parent is a leaf
-                Tree::insert_at::<0>(ptr, parent, &mut self.0),
-            SearchResult::RightOf(parent) =>
-                // SAFETY: parent is a leaf
-                Tree::insert_at::<1>(ptr, parent, &mut self.0)
-        }
-        Ok(())
-    }
     #[inline]
     pub fn remove(&mut self, key: K) -> Option<V> {
         // SAFETY: root is a node in tree
@@ -108,14 +278,6 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
             _ => None
         }
     }
-    /// # Safety
-    /// The node pointer has to point to a node in this tree.
-    /// This will also implicitly move the node pointer out of this tree,
-    /// using the pointer for anything else than inserting it into a different tree is undefined behaviour.
-    #[inline(always)]
-    pub(crate) unsafe fn remove_node(&mut self, ptr: NodeIndex) {
-        Tree::remove_at(ptr, &mut self.0);
-    }
     #[inline]
     pub fn clear(&mut self) {
         let mut ptr = self.0.meta().range[0];
@@ -126,7 +288,6 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
         let meta = self.0.meta_mut();
         meta.root = None;
         meta.range = [None, None];
-        meta.len = 0;
     }
 }
 
@@ -215,16 +376,37 @@ macro_rules! impl_Writer {
 impl_Writer!(TreeWriteGuard);
 impl_Writer!(TreeAllocGuard);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LenEstimate {
+    Empty,
+    Single,
+    /// this is an upper bound on len
+    More(usize)
+}
+
 macro_rules! impl_ReadOnly {
     ( $type:ident ) => {
         impl<'a, K: Ord, V: Value> $type <'a, K, V> {
             #[inline(always)]
-            pub fn len(&self) -> usize {
-                self.0.meta().len
-            }
-            #[inline(always)]
             pub fn is_empty(&self) -> bool {
-                self.0.meta().len == 0
+                self.0.meta().root.is_none()
+            }
+            #[inline]
+            pub fn is_single(&self) -> bool {
+                let range = &self.0.meta().range;
+                range[0].is_some() && range[0] == range[1]
+            }
+            #[inline]
+            pub fn len_estimate(&self) -> LenEstimate {
+                match self.0.meta().range {
+                    [None, None] => LenEstimate::Empty,
+                    [Some(min), Some(max)] if min == max => LenEstimate::Single,
+                    _ => {
+                        let bh = self.0.meta().black_height as usize;
+                        let h = bh << 2;
+                        LenEstimate::More((1 << (h + 1)) - 1)
+                    }
+                }
             }
             #[inline]
             pub fn min(&self) -> Option<&K> {
@@ -264,3 +446,45 @@ macro_rules! impl_ReadOnly {
 impl_ReadOnly!(TreeReadGuard);
 impl_ReadOnly!(TreeWriteGuard);
 impl_ReadOnly!(TreeAllocGuard);
+
+macro_rules! impl_ReadWrite {
+    ( $type:ident ) => {
+        impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            /// # Safety
+            /// Calling this function implicitly moves the node pointer into this tree,
+            /// using the same pointer in a different tree is undefined behaviour.
+            #[inline]
+            pub(crate) unsafe fn insert_node(&mut self, ptr: NodeIndex) -> Result<(), Error> {
+                let key = &self.0[ptr].key;
+                // SAFETY: root is a node in tree
+                match Tree::search(self.0.meta().root, key, &self.0) {
+                    SearchResult::Here(_) => return Err(Error::DuplicateKey),
+                    SearchResult::Empty => {
+                        // Case 1
+                        let meta = self.0.meta_mut();
+                        meta.root = Some(ptr);
+                        meta.range = [Some(ptr), Some(ptr)];
+                    },
+                    SearchResult::LeftOf(parent) =>
+                        // SAFETY: parent is a leaf
+                        Tree::insert_at::<0>(ptr, parent, &mut self.0),
+                    SearchResult::RightOf(parent) =>
+                        // SAFETY: parent is a leaf
+                        Tree::insert_at::<1>(ptr, parent, &mut self.0)
+                }
+                Ok(())
+            }
+            /// # Safety
+            /// The node pointer has to point to a node in this tree.
+            /// This will also implicitly move the node pointer out of this tree,
+            /// using the pointer for anything else than inserting it into a different tree is undefined behaviour.
+            #[inline(always)]
+            pub(crate) unsafe fn remove_node(&mut self, ptr: NodeIndex) {
+                Tree::remove_at(ptr, &mut self.0);
+            }
+        }
+    };
+}
+
+impl_ReadWrite!(TreeWriteGuard);
+impl_ReadWrite!(TreeAllocGuard);

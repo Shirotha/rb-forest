@@ -109,21 +109,18 @@ impl<K: Ord, V: Value> Iterator for IntoIter<K, V> {
     fn next(&mut self) -> Option<Self::Item> {
         let mut port = self.port.alloc();
         let meta = port.meta();
-        if meta.len == 0 { return None; }
         // SAFETY: tree is not empty
-        let index = meta.range[0].unwrap();
+        let index = meta.range[0]?;
         // SAFETY: node exists in this tree
         let node = port.remove(index).unwrap();
         let meta = port.meta_mut();
-        meta.range[0] = node.order[1];
-        meta.len -= 1;
+        // SAFETY: either both range bounds are null, or neither
+        if meta.range[1].unwrap() == index {
+            meta.range = [None; 2];
+        } else {
+            meta.range[0] = node.order[1];
+        }
         Some((node.key, node.value))
-    }
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let port = self.port.read();
-        let len = port.meta().len;
-        (len, Some(len))
     }
 }
 impl<K: Ord, V: Value> DoubleEndedIterator for IntoIter<K, V> {
@@ -131,14 +128,17 @@ impl<K: Ord, V: Value> DoubleEndedIterator for IntoIter<K, V> {
     fn next_back(&mut self) -> Option<Self::Item> {
         let mut port = self.port.alloc();
         let meta = port.meta();
-        if meta.len == 0 { return None; }
         // SAFETY: tree is not empty
-        let index = meta.range[1].unwrap();
+        let index = meta.range[1]?;
         // SAFETY: node exists in this tree
         let node = port.remove(index).unwrap();
         let meta = port.meta_mut();
-        meta.range[1] = node.order[0];
-        meta.len -= 1;
+        // SAFETY: either both range bounds are null, or neither
+        if meta.range[0].unwrap() == index {
+            meta.range = [None; 2];
+        } else {
+            meta.range[1] = node.order[0];
+        }
         Some((node.key, node.value))
     }
 }
@@ -303,7 +303,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
             let meta = port.meta_mut();
             meta.root = root;
             meta.range = [min, max];
-            meta.len = len;
             meta.black_height = ((height + 1) >> 1) as u8;
         }
         Self { port }
@@ -315,3 +314,5 @@ impl<K: Ord, V: Value> Tree<K, V> {
         unsafe { Self::from_sorted_iter_unchecked(port, iter) }
     }
 }
+
+// TODO: Filter/FilterMut iterators (-> use cumulant for early exit)
