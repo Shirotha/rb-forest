@@ -68,9 +68,9 @@ impl<T> SearchResult<T> {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Bounds {
-    root: NodeRef,
-    range: [NodeRef; 2],
-    black_height: u8
+    pub(crate) root: NodeRef,
+    pub(crate) range: [NodeRef; 2],
+    pub(crate) black_height: u8
 }
 
 #[derive(Debug)]

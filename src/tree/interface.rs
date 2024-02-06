@@ -140,10 +140,14 @@ impl<K: Ord, V: Value> Tree<K, V> {
         let order = take(&mut node.order);
         let left_bounds = write.0.meta_mut();
         let mut right_bounds = *left_bounds;
-        left_bounds.root = children[0];
-        left_bounds.range[1] = order[0];
-        if let Some(root) = left_bounds.root {
-            let root = &mut write.0[root];
+        if let Some(index) = children[0] {
+            left_bounds.root = children[0];
+            left_bounds.range[1] = order[0];
+            let root = &mut write.0[index];
+            root.parent = None;
+            if Some(index) == order[0] {
+                root.order[1] = None;
+            }
             if root.is_red() {
                 root.color = Color::Black;
             } else {
@@ -152,16 +156,24 @@ impl<K: Ord, V: Value> Tree<K, V> {
                     meta.black_height -= 1;
                 }
             }
+        } else {
+            *left_bounds = Bounds::default();
         }
-        right_bounds.root = children[1];
-        right_bounds.range[0] = order[1];
-        if let Some(root) = right_bounds.root {
-            let root = &mut write.0[root];
+        if let Some(index) = children[1] {
+            right_bounds.root = children[1];
+            right_bounds.range[0] = order[1];
+            let root = &mut write.0[index];
+            root.parent = None;
+            if Some(index) == order[1] {
+                root.order[0] = None;
+            }
             if root.is_red() {
                 root.color = Color::Black;
             } else if right_bounds.black_height != 0 {
                 right_bounds.black_height -= 1;
             }
+        } else {
+            right_bounds = Bounds::default();
         }
         drop(write);
         let port = self.port.split_with_meta(right_bounds);
@@ -253,7 +265,8 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
                 let ptr = Some(self.0.insert(Node::new(key, value, Color::Black)));
                 let meta = self.0.meta_mut();
                 meta.root = ptr;
-                meta.range = [ptr, ptr]
+                meta.range = [ptr, ptr];
+                meta.black_height = 1;
             },
             SearchResult::LeftOf(parent) => {
                 let ptr = self.0.insert(Node::new(key, value, Color::Red));

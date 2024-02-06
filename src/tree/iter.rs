@@ -8,6 +8,7 @@ use std::{
 pub use sorted_iter::sorted_pair_iterator::SortedByKey;
 
 use crate::{
+    discard,
     arena::{Meta, MetaMut, Port, PortAllocGuard},
     tree::{
         Bounds, Color, Node, NodeRef, Tree, Value,
@@ -246,6 +247,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
     #[inline]
     /// # Safety
     /// It is assumed that the given iterator is sorted by K in incresing order.
+    /// Port->meta is expected to be set to its default value
     ///
     /// For a safe version of this function use the 'sorted-iter' feature.
     pub(crate) unsafe fn from_sorted_iter_unchecked(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V)>) -> Self {
@@ -281,9 +283,15 @@ impl<K: Ord, V: Value> Tree<K, V> {
             let color = !color;
             let [min, left, prev] = build_tree(port, lower, this, color);
             let [next, right, max] = build_tree(port, upper, this, color);
-            let node = &mut port[index];
-            node.children = [left, right];
-            node.order = [prev, next];
+            let root = &mut port[index];
+            root.children = [left, right];
+            root.order = [prev, next];
+            discard! {
+                port[prev?].order[1] = this
+            };
+            discard! {
+                port[next?].order[0] = this
+            };
             [
                 if pivot == 0 { this } else { min },
                 this,
@@ -292,8 +300,11 @@ impl<K: Ord, V: Value> Tree<K, V> {
         }
 
         let items = ManuallyDrop::new(iter.into_iter().collect::<Box<[_]>>());
+        if items.is_empty() {
+            return Self { port }
+        }
         let len = items.len();
-        let height = usize::BITS - (len + 1).leading_zeros() - 1;
+        let height = usize::BITS - (len + 1).leading_zeros();
         let color = if height & 1 == 0 { Color::Black }
             else { Color::Red };
         {
@@ -304,6 +315,13 @@ impl<K: Ord, V: Value> Tree<K, V> {
             meta.root = root;
             meta.range = [min, max];
             meta.black_height = ((height + 1) >> 1) as u8;
+            if let Some(root) = root {
+                let node = &mut port[root];
+                if node.is_red() {
+                    node.color = Color::Black;
+                    port.meta_mut().black_height += 1;
+                }
+            }
         }
         Self { port }
     }
