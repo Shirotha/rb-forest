@@ -601,6 +601,34 @@ impl<K: Ord, V: Value> Tree<K, V> {
     // TODO: make the compiler realize it can automatically drop this/that
     #[inline]
     unsafe fn join(mut self, pivot: NodeIndex, mut other: Self) -> Result<Self, ((Self, Self), Error)> {
+        {
+            let this = self.read();
+            match this.len_estimate() {
+                LenEstimate::Empty => return Ok(other),
+                LenEstimate::Single => {
+                    let mut write = other.write();
+                    // SAFETY: the root is the only node
+                    unsafe { write.insert_node(this.0.meta().root.unwrap()).unwrap_unchecked() };
+                    drop(write);
+                    return Ok(other);
+                },
+                _ => ()
+            }
+        }
+        {
+            let that = other.read();
+            match that.len_estimate() {
+                LenEstimate::Empty => return Ok(self),
+                LenEstimate::Single => {
+                    let mut write = self.write();
+                    // SAFETY: the root is the only node
+                    unsafe { write.insert_node(that.0.meta().root.unwrap()).unwrap_unchecked() };
+                    drop(write);
+                    return Ok(self);
+                },
+                _ => ()
+            }
+        }
         let mut this = self.write();
         let mut that = other.write();
         let center = &this.0[pivot].key;

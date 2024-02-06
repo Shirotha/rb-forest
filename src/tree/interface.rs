@@ -147,7 +147,10 @@ impl<K: Ord, V: Value> Tree<K, V> {
             if root.is_red() {
                 root.color = Color::Black;
             } else {
-                write.0.meta_mut().black_height -= 1;
+                let meta = write.0.meta_mut();
+                if meta.black_height != 0 {
+                    meta.black_height -= 1;
+                }
             }
         }
         right_bounds.root = children[1];
@@ -156,7 +159,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             let root = &mut write.0[root];
             if root.is_red() {
                 root.color = Color::Black;
-            } else {
+            } else if right_bounds.black_height != 0 {
                 right_bounds.black_height -= 1;
             }
         }
