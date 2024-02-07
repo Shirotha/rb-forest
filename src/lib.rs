@@ -279,31 +279,84 @@ mod test {
         }
     }
     #[test]
-    fn join() {
+    fn union_disjoint() {
         let mut forest = WeakForest::with_capacity(20);
-        let even = unsafe { forest.insert_sorted_iter_unchecked(
-            (0..10).map( |n| (2*n, NoCumulant(n)) )
+        let lower = unsafe { forest.insert_sorted_iter_unchecked(
+            (0..10).map( |n| (n, NoCumulant(n)) )
         ) };
-        let odd = unsafe { forest.insert_sorted_iter_unchecked(
-            (0..10).map( |n| (2*n+1, NoCumulant(n)) )
+        let higher = unsafe { forest.insert_sorted_iter_unchecked(
+            (0..10).map( |n| (n+10, NoCumulant(n)) )
         ) };
-        let all = odd.union(even);
+        let all = higher.union_disjoint(lower).expect("disjoint trees");
         {
             let read = all.read();
             print_tree(&read.0);
             validate_rb_tree(&read.0);
+            assert_eq!(read.min(), Some(&0));
+            assert_eq!(read.max(), Some(&19));
+            assert_eq!(read.iter().count(), 20);
         }
-        let (lower, pivot, upper) = all.split(&5);
+    }
+    #[test]
+    fn split() {
+        let mut forest = WeakForest::with_capacity(10);
+        let tree = forest.insert_sorted_iter(
+            (0..10)
+                .map( |i| (i, NoCumulant(i)) )
+                .assume_sorted_by_key()
+        );
+        let (lower, pivot, upper) = tree.split(&5);
         assert_eq!(pivot, Some(NoCumulant(5)));
         {
             let read = lower.read();
+            print_tree(&read.0);
             validate_rb_tree(&read.0);
+            assert_eq!(read.max(), Some(&4));
+            assert_eq!(read.iter().count(), 5);
         }
         {
             let read = upper.read();
+            print_tree(&read.0);
             validate_rb_tree(&read.0);
+            assert_eq!(read.min(), Some(&6));
+            assert_eq!(read.iter().count(), 4);
+        }
+        let (lower, none, empty) = lower.split(&10);
+        assert_eq!(none, None);
+        {
+            let read = empty.read();
+            print_tree(&read.0);
+            assert!(read.is_empty());
+        }
+        {
+            let read = lower.read();
+            print_tree(&read.0);
+            validate_rb_tree(&read.0);
+            assert_eq!(read.max(), Some(&4));
+            assert_eq!(read.iter().count(), 5);
         }
     }
+    // FIXME: why are all nodes black? single children should always be joined as red by insert_node deferral
+    #[test]
+    fn union() {
+        let mut forest = WeakForest::with_capacity(20);
+        let even = unsafe { forest.insert_sorted_iter_unchecked(
+            (0..2).map( |n| (2*n, NoCumulant(n)) )
+        ) };
+        let odd = unsafe { forest.insert_sorted_iter_unchecked(
+            (0..2).map( |n| (2*n+1, NoCumulant(n)) )
+        ) };
+        let all = odd.union_merge(even, |_, _| panic!("duplicate key") );
+        {
+            let read = all.read();
+            print_tree(&read.0);
+            validate_rb_tree(&read.0);
+            assert_eq!(read.min(), Some(&0));
+            assert_eq!(read.max(), Some(&19));
+            assert_eq!(read.iter().count(), 20);
+        }
+    }
+
     #[cfg(feature = "sorted-iter")]
     #[test]
     fn search() {

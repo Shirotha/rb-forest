@@ -561,6 +561,9 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 }
             } else {
                 this_meta.root = ptr;
+                this_meta.black_height += 1;
+                this[pivot].color = Color::Black;
+                // TODO: is there a need to change double black to red here?
             }
             if V::need_update() {
                 Tree::propagate_cumulant(pivot, this);
@@ -603,36 +606,31 @@ impl<K: Ord, V: Value> Tree<K, V> {
     unsafe fn join(mut self, pivot: NodeIndex, mut other: Self) -> Result<Self, ((Self, Self), Error)> {
         {
             let this = self.read();
-            match this.len_estimate() {
-                LenEstimate::Empty => return Ok(other),
-                LenEstimate::Single => {
-                    let mut write = other.write();
-                    // SAFETY: the root is the only node
-                    unsafe { write.insert_node(this.0.meta().root.unwrap()).unwrap_unchecked() };
-                    drop(write);
-                    return Ok(other);
-                },
-                _ => ()
+            if this.is_empty() {
+                let mut write = other.write();
+                if let Err(err) = write.insert_node(pivot) {
+                    drop((this, write));
+                    return Err(((self, other), err));
+                }
+                drop(write);
+                return Ok(other);
             }
         }
         {
             let that = other.read();
-            match that.len_estimate() {
-                LenEstimate::Empty => return Ok(self),
-                LenEstimate::Single => {
-                    let mut write = self.write();
-                    // SAFETY: the root is the only node
-                    unsafe { write.insert_node(that.0.meta().root.unwrap()).unwrap_unchecked() };
-                    drop(write);
-                    return Ok(self);
-                },
-                _ => ()
+            if that.is_empty() {
+                let mut write = self.write();
+                if let Err(err) = write.insert_node(pivot) {
+                    drop((that, write));
+                    return Err(((self, other), err));
+                }
+                drop(write);
+                return Ok(self);
             }
         }
         let mut this = self.write();
         let mut that = other.write();
         let center = &this.0[pivot].key;
-        // FIXME: apparently they are
         // SAFETY: both trees are not empty here
         if this.max().unwrap() < center
             && center < that.min().unwrap()

@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    Reader, Writer,
+    Reader, Writer, discard,
     arena::{
         Meta, MetaMut,
         PortReadGuard, PortWriteGuard, PortAllocGuard
@@ -80,19 +80,31 @@ impl<K: Ord, V: Value> Tree<K, V> {
         unsafe { this.remove_node(pivot); }
         drop((this, that));
         // SAFETY: checks were done before this
-        Ok(unsafe { self.join(pivot, other).unwrap_unchecked() })
+        Ok(unsafe { Self::join(self, pivot, other).unwrap_unchecked() })
     }
     #[inline]
-    pub fn union(mut self, mut other: Self) -> Self {
+    pub fn union_merge<F>(mut self, mut other: Self, merge: F) -> Self
+        where F: Fn(&mut V, V) + Clone
+    {
         {
             let this = self.read();
             match this.len_estimate() {
                 LenEstimate::Empty => return other,
                 LenEstimate::Single => {
-                    let mut write = other.write();
-                    // SAFETY: the root is the only node
-                    unsafe { write.insert_node(this.0.meta().root.unwrap()).unwrap_unchecked() };
-                    drop(write);
+                    let root = this.0.meta().root.unwrap();
+                    let mut alloc = other.alloc();
+                    match unsafe { alloc.insert_node(root) } {
+                        Ok(()) => (),
+                        Err(Error::DuplicateKey) => {
+                            // SAFETY: root exists
+                            let root = alloc.0.remove(root).unwrap();
+                            // SAFETY: this error was causes because this exists
+                            let value = alloc.get_mut(&root.key).unwrap();
+                            merge(value, root.value);
+                        },
+                        _ => panic!("unhandled error")
+                    }
+                    drop(alloc);
                     return other;
                 },
                 _ => ()
@@ -103,10 +115,20 @@ impl<K: Ord, V: Value> Tree<K, V> {
             match that.len_estimate() {
                 LenEstimate::Empty => return self,
                 LenEstimate::Single => {
-                    let mut write = self.write();
-                    // SAFETY: the root is the only node
-                    unsafe { write.insert_node(that.0.meta().root.unwrap()).unwrap_unchecked() };
-                    drop(write);
+                    let root = that.0.meta().root.unwrap();
+                    let mut alloc = self.alloc();
+                    match unsafe { alloc.insert_node(root) } {
+                        Ok(()) => (),
+                        Err(Error::DuplicateKey) => {
+                            // SAFETY: root exists
+                            let root = alloc.0.remove(root).unwrap();
+                            // SAFETY: this error was causes because this exists
+                            let value = alloc.get_mut(&root.key).unwrap();
+                            merge(value, root.value);
+                        },
+                        _ => panic!("unhandled error")
+                    }
+                    drop(alloc);
                     return self;
                 },
                 _ => ()
@@ -115,14 +137,26 @@ impl<K: Ord, V: Value> Tree<K, V> {
         // SAFETY: other is not empty
         let (other_left, Some(other_root), other_right) = other.split_at_root()
             else { panic!() };
-        // NOTE: pivot will only be non-null when pivot->key == other_root->key
-        let (left, _pivot, right) = {
+        {
+            dbg!(other_left.read().iter().count(), other_right.read().iter().count());
+        }
+        let (mut left, pivot, right) = {
             let read = other_left.read();
             let node = &read.0[other_root];
             self.split_node(&node.key)
         };
-        let left = left.union(other_left);
-        let right = right.union(other_right);
+        {
+            dbg!(left.read().iter().count(), right.read().iter().count());
+        }
+        if let Some(pivot) = pivot {
+            let mut alloc = left.alloc();
+            // SAFETY: pivot exists
+            let other = alloc.0.remove(pivot).unwrap();
+            let node = &mut alloc.0[other_root];
+            merge(&mut node.value, other.value);
+        }
+        let left = left.union_merge(other_left, merge.clone());
+        let right = right.union_merge(other_right, merge);
         // SAFETY: left and right are disjoint by other_root by construction
         unsafe { Self::join(left, other_root, right).unwrap_unchecked() }
     }
@@ -143,11 +177,11 @@ impl<K: Ord, V: Value> Tree<K, V> {
         if let Some(index) = children[0] {
             left_bounds.root = children[0];
             left_bounds.range[1] = order[0];
+            discard! {
+                write.0[order[0]?].order[1] = None
+            };
             let root = &mut write.0[index];
             root.parent = None;
-            if Some(index) == order[0] {
-                root.order[1] = None;
-            }
             if root.is_red() {
                 root.color = Color::Black;
             } else {
@@ -162,11 +196,11 @@ impl<K: Ord, V: Value> Tree<K, V> {
         if let Some(index) = children[1] {
             right_bounds.root = children[1];
             right_bounds.range[0] = order[1];
+            discard! {
+                write.0[order[1]?].order[0] = None
+            };
             let root = &mut write.0[index];
             root.parent = None;
-            if Some(index) == order[1] {
-                root.order[0] = None;
-            }
             if root.is_red() {
                 root.color = Color::Black;
             } else if right_bounds.black_height != 0 {
@@ -189,10 +223,44 @@ impl<K: Ord, V: Value> Tree<K, V> {
             return (self, None, other);
         }
         // SAFETY: tree is not empty
+        match write.min().unwrap().cmp(key) {
+            Ordering::Greater => {
+                drop(write);
+                let port = self.port.split_with_meta(Bounds::default());
+                let other = Tree::new(port);
+                return (other, None, self);
+            },
+            Ordering::Equal => {
+                let min = write.0.meta().range[0].unwrap();
+                unsafe { write.remove_node(min) };
+                drop(write);
+                let port = self.port.split_with_meta(Bounds::default());
+                let other = Tree::new(port);
+                return (other, Some(min), self);
+            },
+            _ => ()
+        }
+        match write.max().unwrap().cmp(key) {
+            Ordering::Less => {
+                drop(write);
+                let port = self.port.split_with_meta(Bounds::default());
+                let other = Tree::new(port);
+                return (self, None, other);
+            },
+            Ordering::Equal => {
+                let max = write.0.meta().range[1].unwrap();
+                unsafe { write.remove_node(max) };
+                drop(write);
+                let port = self.port.split_with_meta(Bounds::default());
+                let other = Tree::new(port);
+                return (self, Some(max), other);
+            },
+            _ => ()
+        }
         let index = write.0.meta().root.unwrap();
         let node = &mut write.0[index];
-        let cmp = node.key.cmp(key);
-        match cmp {
+        let root_cmp = node.key.cmp(key);
+        match root_cmp {
             Ordering::Equal => {
                 drop(write);
                 self.split_at_root()
@@ -202,17 +270,17 @@ impl<K: Ord, V: Value> Tree<K, V> {
                     drop(write);
                     let port = self.port.split_with_meta(Bounds::default());
                     let other = Tree::new(port);
-                    if order.is_lt() {
-                        return (self, None, other);
-                    } else {
-                        return (other, None, self)
-                    }
+                    return if order.is_lt() {
+                            (self, None, other)
+                        } else {
+                            (other, None, self)
+                        };
                 }
                 drop(write);
                 // SAFETY: tree is not empty
                 let (left, Some(root), right) = self.split_at_root()
                     else { panic!() };
-                if order.is_lt() {
+                if order.is_gt() {
                     let (left, left_child, center) = left.split_node(key);
                     // SAFETY: center and right are disjoint by construction
                     let right = unsafe { Self::join(center, root, right).unwrap_unchecked() };

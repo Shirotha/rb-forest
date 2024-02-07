@@ -250,6 +250,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
     /// Port->meta is expected to be set to its default value
     ///
     /// For a safe version of this function use the 'sorted-iter' feature.
+    // TODO: make version that takes a slice, so there is no need to allocate
     pub(crate) unsafe fn from_sorted_iter_unchecked(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V)>) -> Self {
         fn build_tree<K: Ord, V: Value>(
             port: &mut PortAllocGuard<Node<K, V>, Bounds>,
