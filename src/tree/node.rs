@@ -115,4 +115,11 @@ impl<K: Ord, V: Value> Node<K, V> {
             Color::Red => true
         }
     }
+    #[inline]
+    pub(crate) const fn clear(&mut self, color: Color) {
+        self.parent = None;
+        self.order = [None, None];
+        self.children = [None, None];
+        self.color = color;
+    }
 }

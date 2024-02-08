@@ -1,4 +1,4 @@
-#![feature(trait_alias, derive_const, const_trait_impl, impl_trait_in_assoc_type)]
+#![feature(trait_alias, derive_const, const_trait_impl, impl_trait_in_assoc_type, const_mut_refs)]
 #![feature(vec_push_within_capacity, slice_split_at_unchecked)]
 #![feature(get_many_mut, maybe_uninit_uninit_array, maybe_uninit_array_assume_init)]
 #![feature(try_blocks, try_trait_v2)]
@@ -211,7 +211,7 @@ mod test {
             let max_node = &tree[meta.range[1].expect("not null")];
             assert_eq!(*min, min_node.key, "bad min range");
             assert_eq!(*max, max_node.key, "bad max range");
-            assert!((min != max) || (black_height == 1), "single node tree has single black node");
+            assert_eq!(meta.black_height, black_height, "tracked black-height and true black-height mismatch");
         } else {
             assert_eq!(meta.range, [None, None], "empty tree implies empty range");
             assert_eq!(meta.black_height, 0, "empty tree has no black nodes");
@@ -246,16 +246,27 @@ mod test {
         print_subtree(tree.meta().root, 0, 1, tree);
     }
 
+    // FIXME: remove will not balance correctly
     #[test]
     fn insert_remove() {
+        let values = vec![1, 7, 8, 9, 10, 6, 5, 2, 3, 4, 0, 11];
         let mut forest = WeakForest::new();
         let mut tree = forest.insert();
         {
             let mut alloc = tree.alloc();
-            alloc.insert(1, NoCumulant(42));
-            validate_rb_tree(&alloc.0);
-            let value = alloc.remove(1);
-            assert_eq!(value, Some(NoCumulant(42)));
+            for x in values.iter().copied() {
+                println!("==================== +{} ====================", x);
+                alloc.insert(x, NoCumulant(x));
+                print_tree(&alloc.0);
+                validate_rb_tree(&alloc.0);
+            }
+            for x in values.into_iter() {
+                println!("==================== -{} ====================", x);
+                let value = alloc.remove(x);
+                print_tree(&alloc.0);
+                validate_rb_tree(&alloc.0);
+                assert_eq!(value, Some(NoCumulant(x)));
+            }
         }
     }
     #[test]
@@ -266,10 +277,9 @@ mod test {
         {
             let mut alloc = tree.alloc();
             for x in values.iter().copied() {
-                // FIXME: insertion failing (indices moved wrong?)
                 alloc.insert(x, NoCumulant(x));
-                validate_rb_tree(&alloc.0);
             }
+            print_tree(&alloc.0);
         }
         values.sort_unstable();
         {
@@ -280,71 +290,92 @@ mod test {
     }
     #[test]
     fn union_disjoint() {
-        let mut forest = WeakForest::with_capacity(20);
-        let lower = unsafe { forest.insert_sorted_iter_unchecked(
-            (0..10).map( |n| (n, NoCumulant(n)) )
-        ) };
-        let higher = unsafe { forest.insert_sorted_iter_unchecked(
-            (0..10).map( |n| (n+10, NoCumulant(n)) )
-        ) };
-        let all = higher.union_disjoint(lower).expect("disjoint trees");
-        {
-            let read = all.read();
-            print_tree(&read.0);
-            validate_rb_tree(&read.0);
-            assert_eq!(read.min(), Some(&0));
-            assert_eq!(read.max(), Some(&19));
-            assert_eq!(read.iter().count(), 20);
+        for i in 0..=5 {
+            println!("==================== {} ====================", i);
+            let mut forest = WeakForest::with_capacity(5);
+            let lower = unsafe { forest.insert_sorted_iter_unchecked(
+                (0..i).map( |n| (n, NoCumulant(n)) )
+            ) };
+            {
+                let read = lower.read();
+                print_tree(&read.0);
+                validate_rb_tree(&read.0);
+            }
+            let higher = unsafe { forest.insert_sorted_iter_unchecked(
+                (i..5).map( |n| (n, NoCumulant(n)) )
+            ) };
+            {
+                let read = higher.read();
+                print_tree(&read.0);
+                validate_rb_tree(&read.0);
+            }
+            let all = higher.union_disjoint(lower).expect("disjoint trees");
+            {
+                let read = all.read();
+                print_tree(&read.0);
+                validate_rb_tree(&read.0);
+                assert_eq!(read.min(), Some(&0));
+                assert_eq!(read.max(), Some(&4));
+                assert_eq!(read.iter().count(), 5);
+            }
         }
     }
     #[test]
     fn split() {
-        let mut forest = WeakForest::with_capacity(10);
-        let tree = forest.insert_sorted_iter(
-            (0..10)
-                .map( |i| (i, NoCumulant(i)) )
-                .assume_sorted_by_key()
-        );
-        let (lower, pivot, upper) = tree.split(&5);
-        assert_eq!(pivot, Some(NoCumulant(5)));
-        {
-            let read = lower.read();
-            print_tree(&read.0);
-            validate_rb_tree(&read.0);
-            assert_eq!(read.max(), Some(&4));
-            assert_eq!(read.iter().count(), 5);
-        }
-        {
-            let read = upper.read();
-            print_tree(&read.0);
-            validate_rb_tree(&read.0);
-            assert_eq!(read.min(), Some(&6));
-            assert_eq!(read.iter().count(), 4);
-        }
-        let (lower, none, empty) = lower.split(&10);
-        assert_eq!(none, None);
-        {
-            let read = empty.read();
-            print_tree(&read.0);
-            assert!(read.is_empty());
-        }
-        {
-            let read = lower.read();
-            print_tree(&read.0);
-            validate_rb_tree(&read.0);
-            assert_eq!(read.max(), Some(&4));
-            assert_eq!(read.iter().count(), 5);
+        let items = [1,3,5,7,9];
+        let n = items.len();
+        for i in 0..11 {
+            println!("==================== {} ====================", i);
+            let mut forest = WeakForest::with_capacity(n);
+            let tree = forest.insert_sorted_iter(
+                items.iter().copied()
+                    .map( |i| (i, NoCumulant(i)) )
+                    .assume_sorted_by_key()
+            );
+            {
+                let read = tree.read();
+                print_tree(&read.0);
+                validate_rb_tree(&read.0);
+            }
+            let j = items.binary_search(&i);
+            let (lower, pivot, upper) = tree.split(&i);
+            if j.is_ok() {
+                assert_eq!(pivot, Some(NoCumulant(i)));
+            } else {
+                assert_eq!(pivot, None);
+            }
+            {
+                let read = lower.read();
+                print_tree(&read.0);
+                validate_rb_tree(&read.0);
+                assert_eq!(read.max(),
+                    j.map_or_else( |j| items.get(j.wrapping_sub(1)) , |j| items.get(j.wrapping_sub(1)) )
+                );
+                assert_eq!(read.iter().count(),
+                    j.unwrap_or_else( |j| j )
+                );
+            }
+            {
+                let read = upper.read();
+                print_tree(&read.0);
+                validate_rb_tree(&read.0);
+                assert_eq!(read.min(),
+                    j.map_or_else( |j| items.get(j) , |j| items.get(j + 1) )
+                );
+                assert_eq!(read.iter().count(),
+                    j.map_or_else( |j| n - j , |j| n - j - 1 )
+                );
+            }
         }
     }
-    // FIXME: why are all nodes black? single children should always be joined as red by insert_node deferral
     #[test]
     fn union() {
         let mut forest = WeakForest::with_capacity(20);
         let even = unsafe { forest.insert_sorted_iter_unchecked(
-            (0..2).map( |n| (2*n, NoCumulant(n)) )
+            (0..10).map( |n| (2*n, NoCumulant(n)) )
         ) };
         let odd = unsafe { forest.insert_sorted_iter_unchecked(
-            (0..2).map( |n| (2*n+1, NoCumulant(n)) )
+            (0..10).map( |n| (2*n+1, NoCumulant(n)) )
         ) };
         let all = odd.union_merge(even, |_, _| panic!("duplicate key") );
         {

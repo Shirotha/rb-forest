@@ -137,17 +137,11 @@ impl<K: Ord, V: Value> Tree<K, V> {
         // SAFETY: other is not empty
         let (other_left, Some(other_root), other_right) = other.split_at_root()
             else { panic!() };
-        {
-            dbg!(other_left.read().iter().count(), other_right.read().iter().count());
-        }
         let (mut left, pivot, right) = {
             let read = other_left.read();
             let node = &read.0[other_root];
             self.split_node(&node.key)
         };
-        {
-            dbg!(left.read().iter().count(), right.read().iter().count());
-        }
         if let Some(pivot) = pivot {
             let mut alloc = left.alloc();
             // SAFETY: pivot exists
@@ -185,10 +179,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             if root.is_red() {
                 root.color = Color::Black;
             } else {
-                let meta = write.0.meta_mut();
-                if meta.black_height != 0 {
-                    meta.black_height -= 1;
-                }
+                write.0.meta_mut().black_height -= 1;
             }
         } else {
             *left_bounds = Bounds::default();
@@ -203,7 +194,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             root.parent = None;
             if root.is_red() {
                 root.color = Color::Black;
-            } else if right_bounds.black_height != 0 {
+            } else {
                 right_bounds.black_height -= 1;
             }
         } else {
@@ -548,13 +539,19 @@ macro_rules! impl_ReadWrite {
                         let meta = self.0.meta_mut();
                         meta.root = Some(ptr);
                         meta.range = [Some(ptr), Some(ptr)];
+                        meta.black_height = 1;
+                        self.0[ptr].clear(Color::Black);
                     },
-                    SearchResult::LeftOf(parent) =>
+                    SearchResult::LeftOf(parent) => {
+                        self.0[ptr].clear(Color::Red);
                         // SAFETY: parent is a leaf
-                        Tree::insert_at::<0>(ptr, parent, &mut self.0),
-                    SearchResult::RightOf(parent) =>
+                        Tree::insert_at::<0>(ptr, parent, &mut self.0)
+                    },
+                    SearchResult::RightOf(parent) => {
+                        self.0[ptr].clear(Color::Red);
                         // SAFETY: parent is a leaf
                         Tree::insert_at::<1>(ptr, parent, &mut self.0)
+                    }
                 }
                 Ok(())
             }

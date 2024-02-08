@@ -250,7 +250,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
     /// Port->meta is expected to be set to its default value
     ///
     /// For a safe version of this function use the 'sorted-iter' feature.
-    // TODO: make version that takes a slice, so there is no need to allocate
+    // TODO: make version that takes a slice, so there is no need to allocate (also try using skip/take for (exactsize)iterator version)
     pub(crate) unsafe fn from_sorted_iter_unchecked(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V)>) -> Self {
         fn build_tree<K: Ord, V: Value>(
             port: &mut PortAllocGuard<Node<K, V>, Bounds>,
@@ -305,7 +305,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             return Self { port }
         }
         let len = items.len();
-        let height = usize::BITS - (len + 1).leading_zeros();
+        let height = usize::BITS - len.leading_zeros();
         let color = if height & 1 == 0 { Color::Black }
             else { Color::Red };
         {
@@ -315,7 +315,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             let meta = port.meta_mut();
             meta.root = root;
             meta.range = [min, max];
-            meta.black_height = ((height + 1) >> 1) as u8;
+            meta.black_height = (height >> 1) as u8;
             if let Some(root) = root {
                 let node = &mut port[root];
                 if node.is_red() {

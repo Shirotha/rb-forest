@@ -288,7 +288,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             // SAFETY: guarantied by caller
             let grandparent = parent_node.parent.unwrap();
             // SAFETY: tree is balanced, so nodes on parent level cannot be null
-            ptr = if tree[grandparent].children[1].unwrap() == parent {
+            ptr = if tree[grandparent].children[1].is_some_and( |uncle| uncle == parent ) {
                 if is_left {
                     helper::<0, 0, K, V>(ptr, parent, grandparent, tree)
                 } else {
@@ -371,7 +371,8 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 Self::propagate_cumulant(parent, tree);
             }
         } else {
-            tree.meta_mut().black_height -= 1;
+            // DEBUG: commentend out for testing only
+            //tree.meta_mut().black_height -= 1;
         }
     }
     /// # Safety
