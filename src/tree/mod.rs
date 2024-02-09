@@ -8,8 +8,7 @@ mod cursor;
 pub use cursor::*;
 
 use std::{
-    cmp::Ordering,
-    ops::{Index as IndexRO, IndexMut}
+    cmp::Ordering, mem::swap, ops::{Index as IndexRO, IndexMut}
 };
 
 use thiserror::Error;
@@ -111,6 +110,27 @@ impl<K: Ord, V: Value> Tree<K, V> {
         }
     }
     /// # Safety
+    /// The node pointers hve to be owned by tree.
+    #[inline]
+    unsafe fn replace(old: NodeIndex, new: NodeRef,
+        tree: &mut impl TreeWriter<K, V>
+    ) {
+        let parent = tree[old].parent;
+        discard! {
+            tree[new?].parent = parent
+        };
+        if let Some(parent) = parent {
+            let parent_node = &mut tree[parent];
+            if parent_node.children[0].is_some_and( |left| left == old ) {
+                parent_node.children[0] = new;
+            } else {
+                parent_node.children[1] = new;
+            }
+        } else {
+            tree.meta_mut().root = new;
+        }
+    }
+    /// # Safety
     /// the node at `ptr->children[1 - I]` cannot be None.
     ///
     /// The node pointer has to be owned by tree.
@@ -118,30 +138,17 @@ impl<K: Ord, V: Value> Tree<K, V> {
     unsafe fn rotate<const I: usize>(ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
     ) where [(); 1 - I]: {
-        let node = &tree[ptr];
-        let parent = node.parent;
+        let pivot = tree[ptr].children[1 - I];
+        Self::replace(ptr, pivot, tree);
         // SAFETY: guarantied by caller
-        let pivot = node.children[1 - I].unwrap();
-        let pivot_node = &mut tree[pivot];
-        let child = pivot_node.children[I];
-        pivot_node.parent = parent;
-        pivot_node.children[I] = Some(ptr);
+        let pivot_node = &mut tree[pivot.unwrap()];
+        let child = pivot_node.children[I].replace(ptr);
+        let node = &mut tree[ptr];
+        node.parent = pivot;
+        node.children[1 - I] = child;
         discard! {
             tree[child?].parent = Some(ptr)
         };
-        let node = &mut tree[ptr];
-        node.parent = Some(pivot);
-        node.children[1 - I] = child;
-        if let Some(parent) = parent {
-            let parent_node = &mut tree[parent];
-            if parent_node.children[I].is_some_and( |child| child == ptr ) {
-                parent_node.children[I] = Some(pivot);
-            } else {
-                parent_node.children[1 - I] = Some(pivot);
-            }
-        } else {
-            tree.meta_mut().root = Some(pivot);
-        }
     }
     /// # Safety
     /// The node pointer has to be owned by tree.
@@ -312,48 +319,55 @@ impl<K: Ord, V: Value> Tree<K, V> {
     /// # Safety
     /// The node pointer has to be owned by tree.
     #[inline]
-    unsafe fn remove_at(ptr: NodeIndex,
+    unsafe fn remove_at(mut ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
     ) {
         let node = &tree[ptr];
+        let mut children = node.children;
+        if let [Some(_), Some(_)] = children {
+            // SAFETY: node has a right child, so it also has a successor
+            let next = node.order[1].unwrap();
+            // SAFETY: both nodes exist and are not the same
+            let Ok([Some(node), Some(next_node)]) = tree.get_pair_mut(ptr, next)
+                else { panic!() };
+            swap(&mut node.key, &mut next_node.key);
+            swap(&mut node.value, &mut next_node.value);
+            swap(&mut node.order, &mut next_node.order);
+            ptr = next;
+            children = tree[ptr].children;
+        }
+        let node = &tree[ptr];
         let parent = node.parent;
-        let mut color = node.color;
+        let color = node.color;
+        // TODO: confirm ordering works corretly with the swaps
         let [prev, next] = node.order;
-        let fix = if node.children[0].is_none() {
-            let fix = node.children[1];
-            Self::transplant(ptr, fix, tree);
-            fix
-        } else if node.children[1].is_none() {
-            let fix = node.children[0];
-            Self::transplant(ptr, fix, tree);
-            fix
-        } else {
-            // SAFETY: node has a right child, so has to have a succsesor
-            let min = tree[ptr].order[1].unwrap();
-            let min_node = &tree[min];
-            color = min_node.color;
-            let fix = min_node.children[1];
-            if min_node.parent.is_some_and( |parent| parent == ptr ) {
-                // SAFETY: node has both children in this branch
-                tree[fix.unwrap()].parent = Some(min);
+        match children {
+            [Some(left), None] => {
+                Self::replace(ptr, Some(left), tree);
+                tree[left].color = Color::Black;
+            },
+            [None, Some(right)] => {
+                Self::replace(ptr, Some(right), tree);
+                tree[right].color = Color::Black;
+            },
+            [None, None] => if let Some(parent) = parent {
+                if color == Color::Red {
+                    let parent_node = &mut tree[parent];
+                    if parent_node.children[0].is_some_and( |left| left == ptr ) {
+                        parent_node.children[0] = None;
+                    } else {
+                        parent_node.children[1] = None;
+                    }
+                } else {
+                    Self::fix_remove(ptr, tree);
+                }
             } else {
-                Self::transplant(min, tree[min].children[1], tree);
-                let right = tree[ptr].children[1];
-                tree[min].children[1] = right;
-                // SAFETY: node has both children in this branch
-                tree[right.unwrap()].parent = Some(min);
-            }
-            Self::transplant(ptr, Some(min), tree);
-            let node = &tree[ptr];
-            let left = node.children[0];
-            let color = node.color;
-            let min_node = &mut tree[min];
-            min_node.children[0] = left;
-            min_node.color = color;
-            // SAFETY: node has both children in this branch
-            tree[left.unwrap()].parent = Some(min);
-            fix
-        };
+                *tree.meta_mut() = Bounds::default();
+                return;
+            },
+            // SAFETY: case of both children was transformed into max one child earlier
+            _ => panic!()
+        }
         match prev {
             Some(prev) => tree[prev].order[1] = next,
             None => tree.meta_mut().range[0] = next
@@ -361,10 +375,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
         match next {
             Some(next) => tree[next].order[0] = prev,
             None => tree.meta_mut().range[1] = prev
-        }
-        if let (Some(fix), Color::Black) = (fix, color) {
-            // SAFETY: search was successful, so tree cannot be empty
-            Self::fix_remove(fix, tree)
         }
         if let Some(parent) = parent {
             if V::need_update() {
@@ -376,30 +386,10 @@ impl<K: Ord, V: Value> Tree<K, V> {
         }
     }
     /// # Safety
-    /// The node pointers hve to be owned by tree.
-    #[inline]
-    unsafe fn transplant(ptr: NodeIndex, child: NodeRef,
-        tree: &mut impl TreeWriter<K, V>
-    ) {
-        let parent = tree[ptr].parent;
-        discard! {
-            tree[child?].parent = parent
-        };
-        if let Some(parent) = parent {
-            let parent_node = &mut tree[parent];
-            if parent_node.children[0].is_some_and( |left| left == ptr ) {
-                parent_node.children[0] = child;
-            } else {
-                parent_node.children[1] = child;
-            }
-        } else {
-            tree.meta_mut().root = child;
-        }
-    }
-    /// # Safety
-    /// The node pointer has to point to a black node.
+    /// The node pointer has to point to a black non-root leaf node.
     ///
     /// The node pointer has to be owned by tree.
+    // FIXME: update algorithm to match new call-site
     #[inline]
     unsafe fn fix_remove(mut ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
@@ -594,7 +584,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 index = node.children[I].unwrap();
             }
         }
-        Self::transplant(index, ptr, this);
+        Self::replace(index, ptr, this);
         helper::<I, K, V>(this, this[index].parent, Some(index), pivot, that_meta);
     }
     /// # Note
