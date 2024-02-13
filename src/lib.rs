@@ -290,9 +290,10 @@ mod test {
     }
     #[test]
     fn union_disjoint() {
-        for i in 0..=5 {
+        const N: usize = 5;
+        for i in 0..=N {
             println!("==================== {} ====================", i);
-            let mut forest = WeakForest::with_capacity(5);
+            let mut forest = WeakForest::with_capacity(N);
             let lower = unsafe { forest.insert_sorted_iter_unchecked(
                 (0..i).map( |n| (n, NoCumulant(n)) )
             ) };
@@ -302,7 +303,7 @@ mod test {
                 validate_rb_tree(&read.0);
             }
             let higher = unsafe { forest.insert_sorted_iter_unchecked(
-                (i..5).map( |n| (n, NoCumulant(n)) )
+                (i..N).map( |n| (n, NoCumulant(n)) )
             ) };
             {
                 let read = higher.read();
@@ -315,8 +316,8 @@ mod test {
                 print_tree(&read.0);
                 validate_rb_tree(&read.0);
                 assert_eq!(read.min(), Some(&0));
-                assert_eq!(read.max(), Some(&4));
-                assert_eq!(read.iter().count(), 5);
+                assert_eq!(read.max(), Some(&(N - 1)));
+                assert_eq!(read.iter().count(), N);
             }
         }
     }
@@ -368,40 +369,64 @@ mod test {
             }
         }
     }
+    // FIXME: wrong coloring (produces [B: [R: NIL NIL] [R: NIL NIL]] sub-tree (should all be black?))
     #[test]
     fn union() {
-        let mut forest = WeakForest::with_capacity(20);
+        const N: usize = 10;
+        let mut forest = WeakForest::with_capacity(N << 1);
         let even = unsafe { forest.insert_sorted_iter_unchecked(
-            (0..10).map( |n| (2*n, NoCumulant(n)) )
+            (0..N).map( |n| (2*n, NoCumulant(n)) )
         ) };
+        {
+            let read = even.read();
+            print_tree(&read.0);
+            validate_rb_tree(&read.0);
+        }
         let odd = unsafe { forest.insert_sorted_iter_unchecked(
-            (0..10).map( |n| (2*n+1, NoCumulant(n)) )
+            (0..N).map( |n| (2*n+1, NoCumulant(n)) )
         ) };
+        {
+            let read = odd.read();
+            print_tree(&read.0);
+            validate_rb_tree(&read.0);
+        }
         let all = odd.union_merge(even, |_, _| panic!("duplicate key") );
         {
             let read = all.read();
             print_tree(&read.0);
             validate_rb_tree(&read.0);
             assert_eq!(read.min(), Some(&0));
-            assert_eq!(read.max(), Some(&19));
-            assert_eq!(read.iter().count(), 20);
+            assert_eq!(read.max(), Some(&((N << 1) - 1)));
+            assert_eq!(read.iter().count(), N << 1);
         }
     }
 
     #[cfg(feature = "sorted-iter")]
     #[test]
     fn search() {
-        let mut forest = WeakForest::with_capacity(10);
+        const N: usize = 5;
+        let mut forest = WeakForest::with_capacity(N);
         let tree = forest.insert_sorted_iter(
-            (0..10)
-                .map( |i| (i, NoCumulant(10 + i)) )
+            (0..N)
+                .map( |i| (2*i+1, NoCumulant(2*i+1)) )
                 .assume_sorted_by_key()
         );
         {
             let read = tree.read();
+            print_tree(&read.0);
             validate_rb_tree(&read.0);
-            let key = read.search_by( |_, v| v.0.cmp(&14) );
-            assert_eq!(key, SearchResult::Here(&4));
+            for i in 0..=(N<<1) {
+                let result = read.search_by( |_, v| v.0.cmp(&i) );
+                if i & 1 == 1 {
+                    assert_eq!(result, SearchResult::Here(&i));
+                } else {
+                    match result {
+                        SearchResult::LeftOf(next) => assert_eq!(next, &(i + 1)),
+                        SearchResult::RightOf(prev) => assert_eq!(prev, &(i - 1)),
+                        _ => panic!("unexpected search result")
+                    }
+                }
+            }
         }
     }
 }

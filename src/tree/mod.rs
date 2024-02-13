@@ -19,7 +19,10 @@ use crate::{
     arena::{Port, Index, Meta, MetaMut, Error as ArenaError},
 };
 
+// SAFETY: these have to be public for generic bounds only, there is no way to access an actual object of this type publically
+#[allow(private_bounds)]
 pub trait TreeReader<K: Ord, V: Value> = Reader<Index, Item = Node<K, V>> + IndexRO<NodeIndex, Output = Node<K, V>> + Meta<Type = Bounds>;
+#[allow(private_bounds)]
 pub trait TreeWriter<K: Ord, V: Value> = Writer<Index, ArenaError, Item = Node<K, V>> + IndexMut<NodeIndex, Output = Node<K, V>> + MetaMut<Type = Bounds>;
 
 
@@ -250,7 +253,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
             // SAFETY: tree is balanced, so nodes on parent level cannot be null
             let uncle = grandparent_node.children[I];
             if uncle.is_some_and( |uncle| tree[uncle].is_red() ) {
-                // Case 3.1
                 // SAFETY: check in surrounding if
                 tree[uncle.unwrap()].color = Color::Black;
                 tree[parent].color = Color::Black;
@@ -258,14 +260,12 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 ptr = grandparent;
             } else {
                 if I == J {
-                    // Case 3.2.2
                     Tree::rotate::<{1 - I}>(parent, tree);
                     if V::need_update() {
                         Tree::update_cumulant(parent, tree);
                     }
                     ptr = parent;
                 }
-                // Case 3.2.1
                 // SAFETY: guarantied by caller
                 let parent = tree[ptr].parent.unwrap();
                 let parent_node = &mut tree[parent];
@@ -288,7 +288,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
             let parent = node.parent.unwrap();
             let parent_node = &tree[parent];
             if parent_node.is_black() {
-                // Case 2
                 break;
             }
             let is_left = parent_node.children[0].is_some_and( |left| left == ptr );
@@ -577,7 +576,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
             if node.is_black() {
                 diff -= 1;
             }
-            if diff == 0 { break; }
             if let Some(next) = node.children[1 - I] {
                 index = next;
             } else {

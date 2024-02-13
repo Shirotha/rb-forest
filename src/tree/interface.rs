@@ -559,6 +559,7 @@ macro_rules! impl_ReadWrite {
             /// The node pointer has to point to a node in this tree.
             /// This will also implicitly move the node pointer out of this tree,
             /// using the pointer for anything else than inserting it into a different tree is undefined behaviour.
+            #[allow(unused)]
             #[inline(always)]
             pub(crate) unsafe fn remove_node(&mut self, ptr: NodeIndex) -> NodeIndex {
                 Tree::remove_at(ptr, &mut self.0)
