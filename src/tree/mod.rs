@@ -321,7 +321,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
     #[inline]
     unsafe fn remove_at(mut ptr: NodeIndex,
         tree: &mut impl TreeWriter<K, V>
-    ) {
+    ) -> NodeIndex {
         let node = &tree[ptr];
         let mut children = node.children;
         if let [Some(_), Some(_)] = children {
@@ -332,7 +332,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 else { panic!() };
             swap(&mut node.key, &mut next_node.key);
             swap(&mut node.value, &mut next_node.value);
-            swap(&mut node.order, &mut next_node.order);
             ptr = next;
             children = tree[ptr].children;
         }
@@ -363,7 +362,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 }
             } else {
                 *tree.meta_mut() = Bounds::default();
-                return;
+                return ptr;
             },
             // SAFETY: case of both children was transformed into max one child earlier
             _ => panic!()
@@ -384,6 +383,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             // DEBUG: commentend out for testing only
             //tree.meta_mut().black_height -= 1;
         }
+        ptr
     }
     /// # Safety
     /// The node pointer has to point to a black non-root leaf node.
@@ -395,9 +395,9 @@ impl<K: Ord, V: Value> Tree<K, V> {
         tree: &mut impl TreeWriter<K, V>
     ) {
         #[inline]
-        unsafe fn helper<const I: usize, K: Ord, V: Value>(mut ptr: NodeIndex, mut parent: NodeIndex,
+        unsafe fn helper<const I: usize, K: Ord, V: Value>(parent: NodeIndex,
             tree: &mut impl TreeWriter<K, V>
-        ) -> NodeIndex
+        ) -> NodeRef
             where [(); 1 - I]:, [(); 1 - (1 - I)]:
         {
             let parent_node = &tree[parent];
@@ -405,68 +405,69 @@ impl<K: Ord, V: Value> Tree<K, V> {
             let mut sibling = parent_node.children[1 - I].unwrap();
             let sibling_node = &mut tree[sibling];
             if sibling_node.is_red() {
-                // Case 3.1
                 sibling_node.color = Color::Black;
+                let nephew = sibling_node.children[I];
                 tree[parent].color = Color::Red;
                 Tree::rotate::<I>(parent, tree);
-                // SAFETY: tree is balanced, so nodes on parent level cannot be null
-                parent = tree[ptr].parent.unwrap();
                 // SAFETY: tree is balanced, so nodes on node level cannot be null
-                sibling = tree[parent].children[1 - I].unwrap();
+                sibling = nephew.unwrap();
             }
             let nephews = tree[sibling].children;
-            let is_black = !nephews[1 - I].is_some_and( |nephew| tree[nephew].is_red() );
-            if !nephews[I].is_some_and( |nephew| tree[nephew].is_red() ) && is_black {
-                // Case 3.2
-                tree[sibling].color = Color::Red;
-                ptr = parent;
-            } else {
-                if is_black {
-                    // Case 3.3
-                    discard! {
-                        tree[nephews[I]?].color = Color::Black
-                    };
+            let close_red = nephews[I].is_some_and( |nephew| tree[nephew].is_red() );
+            if nephews[1 - I].is_some_and( |nephew| tree[nephew].is_red() ) || close_red {
+                if close_red {
+                    // SAFETY: this is a red node, so it exists
+                    let close = nephews[I].unwrap();
+                    tree[close].color = Color::Black;
                     tree[sibling].color = Color::Red;
                     Tree::rotate::<{1 - I}>(sibling, tree);
+                    sibling = close;
                     if V::need_update() {
                         Tree::update_cumulant(sibling, tree);
                         discard! {
                             Tree::update_cumulant(nephews[I]?, tree)
                         };
                     }
-                    // SAFETY: tree is balanced, so nodes on parent level cannot be null
-                    parent = tree[ptr].parent.unwrap();
-                    // SAFETY: tree is balanced, so nodes on node level cannot be null
-                    sibling = tree[parent].children[1 - I].unwrap();
                 }
-                // Case 3.4
                 // SAFETY: sibling is child of parent, both exist
                 let [Some(sibling_node), Some(parent_node)] = tree.get_pair_mut(sibling, parent).unwrap() else { panic!() };
                 sibling_node.color = parent_node.color;
                 parent_node.color = Color::Black;
-                // SAFETY: tree is balanced, so nodes on node level cannot be null
-                let nephew = sibling_node.children[1 - I].unwrap();
-                tree[nephew].color = Color::Black;
+                // SAFETY: node is red, so it exists
+                let far = sibling_node.children[1 - I].unwrap();
+                tree[far].color = Color::Black;
                 Tree::rotate::<I>(parent, tree);
-                ptr = tree.meta().root.unwrap();
+                return None;
             }
-            ptr
+            tree[sibling].color = Color::Red;
+            let parent_node = &mut tree[parent];
+            if parent_node.is_red() {
+                parent_node.color = Color::Black;
+                return None;
+            }
+            Some(parent)
         }
-
+        // SAFETY: node is not the root
+        let mut parent = tree[ptr].parent.unwrap();
+        let parent_node = &mut tree[parent];
+        let mut is_right = parent_node.children[1].is_some_and( |right| right == ptr );
+        parent_node.children[is_right as usize] = None;
         loop {
-            let node = &mut tree[ptr];
-            if let (Some(parent), Color::Black) = (node.parent, node.color) {
-                // Case 3
-                ptr = if tree[parent].children[0].is_some_and( |left| left == ptr ) {
-                    helper::<0, K, V>(ptr, parent, tree)
-                } else {
-                    helper::<1, K, V>(ptr, parent, tree)
-                };
+            let next = if is_right {
+                helper::<1, K, V>(parent, tree)
             } else {
-                // Case 1
-                node.color = Color::Black;
-                return;
-            }
+                helper::<0, K, V>(parent, tree)
+            };
+            if let Some(next) = next {
+                let node = &tree[next];
+                if let Some(par) = node.parent {
+                    (ptr, parent) = (next, par);
+                    is_right = tree[parent].children[1].is_some_and( |right| right == ptr );
+                } else {
+                    tree.meta_mut().black_height -= 1;
+                    return;
+                }
+            } else { return; }
         }
     }
     #[inline]

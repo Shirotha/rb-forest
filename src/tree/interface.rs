@@ -77,7 +77,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             unsafe { this.0.meta().range[0].unwrap_unchecked() }
         };
         // SAFETY: pivot was retrived from this tree
-        unsafe { this.remove_node(pivot); }
+        let pivot = unsafe { this.remove_node(pivot) };
         drop((this, that));
         // SAFETY: checks were done before this
         Ok(unsafe { Self::join(self, pivot, other).unwrap_unchecked() })
@@ -223,7 +223,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             },
             Ordering::Equal => {
                 let min = write.0.meta().range[0].unwrap();
-                unsafe { write.remove_node(min) };
+                let min = unsafe { write.remove_node(min) };
                 drop(write);
                 let port = self.port.split_with_meta(Bounds::default());
                 let other = Tree::new(port);
@@ -240,7 +240,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             },
             Ordering::Equal => {
                 let max = write.0.meta().range[1].unwrap();
-                unsafe { write.remove_node(max) };
+                let max = unsafe { write.remove_node(max) };
                 drop(write);
                 let port = self.port.split_with_meta(Bounds::default());
                 let other = Tree::new(port);
@@ -346,7 +346,7 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
         match unsafe { Tree::search(self.0.meta().root, &key, &self.0) } {
             SearchResult::Here(ptr) => {
                 // SAFETY: node is the result of a search in tree
-                unsafe { Tree::remove_at(ptr, &mut self.0); }
+                let ptr = unsafe { Tree::remove_at(ptr, &mut self.0) };
                 // SAFETY: node was found, so it exists
                 Some(self.0.remove(ptr).unwrap().value)
             }
@@ -560,8 +560,8 @@ macro_rules! impl_ReadWrite {
             /// This will also implicitly move the node pointer out of this tree,
             /// using the pointer for anything else than inserting it into a different tree is undefined behaviour.
             #[inline(always)]
-            pub(crate) unsafe fn remove_node(&mut self, ptr: NodeIndex) {
-                Tree::remove_at(ptr, &mut self.0);
+            pub(crate) unsafe fn remove_node(&mut self, ptr: NodeIndex) -> NodeIndex {
+                Tree::remove_at(ptr, &mut self.0)
             }
         }
     };
