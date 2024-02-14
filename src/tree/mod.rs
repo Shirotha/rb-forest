@@ -233,7 +233,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
         if parent_node.parent.is_some() {
             Self::fix_insert(ptr, tree);
         }
-        if V::need_update() {
+        if V::has_cumulant() {
             Self::propagate_cumulant(ptr, tree);
         }
     }
@@ -261,7 +261,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             } else {
                 if I == J {
                     Tree::rotate::<{1 - I}>(parent, tree);
-                    if V::need_update() {
+                    if V::has_cumulant() {
                         Tree::update_cumulant(parent, tree);
                     }
                     ptr = parent;
@@ -275,7 +275,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 let grandparent_node = &mut tree[grandparent];
                 grandparent_node.color = Color::Red;
                 Tree::rotate::<I>(grandparent, tree);
-                if V::need_update() {
+                if V::has_cumulant() {
                     Tree::update_cumulant(grandparent, tree);
                 }
             }
@@ -375,7 +375,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             None => tree.meta_mut().range[1] = prev
         }
         if let Some(parent) = parent {
-            if V::need_update() {
+            if V::has_cumulant() {
                 Self::propagate_cumulant(parent, tree);
             }
         } else {
@@ -421,7 +421,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
                     tree[sibling].color = Color::Red;
                     Tree::rotate::<{1 - I}>(sibling, tree);
                     sibling = close;
-                    if V::need_update() {
+                    if V::has_cumulant() {
                         Tree::update_cumulant(sibling, tree);
                         discard! {
                             Tree::update_cumulant(nephews[I]?, tree)
@@ -556,7 +556,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 this[pivot].color = Color::Black;
                 // TODO: is there a need to change double black to red here?
             }
-            if V::need_update() {
+            if V::has_cumulant() {
                 Tree::propagate_cumulant(pivot, this);
             }
         }

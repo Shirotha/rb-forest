@@ -13,22 +13,22 @@ use crate::{
     tree::{
         Error, Bounds, Tree, SearchResult,
         Node, NodeIndex, NodeRef,
-        Value, Color
+        Value, ValueMut, Color
     }
 };
 
 impl<K: Ord, V: Value> Tree<K, V> {
     #[inline]
     pub fn read(&self) -> TreeReadGuard<K, V> {
-        TreeReadGuard(self.port.read())
+        TreeReadGuard(self.port.read(), self)
     }
     #[inline]
     pub fn write(&mut self) -> TreeWriteGuard<K, V> {
-        TreeWriteGuard(self.port.write())
+        TreeWriteGuard(self.port.write(), self)
     }
     #[inline]
     pub fn alloc(&mut self) -> TreeAllocGuard<K, V> {
-        TreeAllocGuard(self.port.alloc())
+        TreeAllocGuard(self.port.alloc(), self)
     }
     #[inline]
     pub fn union_disjoint(mut self, mut other: Self) -> Result<Self, ((Self, Self), Error)> {
@@ -84,7 +84,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
     }
     #[inline]
     pub fn union_merge<F>(mut self, mut other: Self, merge: F) -> Self
-        where F: Fn(&mut V, V) + Clone
+        where F: Fn(&mut V::Mut<'_>, V) + Clone
     {
         {
             let this = self.read();
@@ -99,8 +99,8 @@ impl<K: Ord, V: Value> Tree<K, V> {
                             // SAFETY: root exists
                             let root = alloc.0.remove(root).unwrap();
                             // SAFETY: this error was causes because this exists
-                            let value = alloc.get_mut(&root.key).unwrap();
-                            merge(value, root.value);
+                            let mut value = alloc.get_mut(&root.key).unwrap();
+                            merge(&mut value, root.value);
                         },
                         _ => panic!("unhandled error")
                     }
@@ -123,8 +123,8 @@ impl<K: Ord, V: Value> Tree<K, V> {
                             // SAFETY: root exists
                             let root = alloc.0.remove(root).unwrap();
                             // SAFETY: this error was causes because this exists
-                            let value = alloc.get_mut(&root.key).unwrap();
-                            merge(value, root.value);
+                            let mut value = alloc.get_mut(&root.key).unwrap();
+                            merge(&mut value, root.value);
                         },
                         _ => panic!("unhandled error")
                     }
@@ -147,7 +147,8 @@ impl<K: Ord, V: Value> Tree<K, V> {
             // SAFETY: pivot exists
             let other = alloc.0.remove(pivot).unwrap();
             let node = &mut alloc.0[other_root];
-            merge(&mut node.value, other.value);
+            // TODO: actually to the propagation after building the tree
+            merge(&mut unsafe { node.value.get_mut_unchecked() }, other.value);
         }
         let left = left.union_merge(other_left, merge.clone());
         let right = right.union_merge(other_right, merge);
@@ -287,33 +288,34 @@ impl<K: Ord, V: Value> Tree<K, V> {
 
     }
     #[inline]
-    pub fn split(self, key: &K) -> (Self, Option<V>, Self) {
+    pub fn split(self, key: &K) -> (Self, Option<V::Into>, Self) {
         let (mut left, pivot, right) = self.split_node(key);
         let value = if let Some(index) = pivot {
             let mut alloc = left.alloc();
             // SAFETY: pivot belongs to the original tree
             let node = unsafe { alloc.0.remove(index).unwrap_unchecked() };
-            Some(node.value)
+            Some(node.value.into())
         } else { None };
         (left, value, right)
     }
 }
 
 #[derive(Debug)]
-pub struct TreeReadGuard<'a, K: Ord, V: Value>(pub(crate) PortReadGuard<'a, Node<K, V>, Bounds>);
+pub struct TreeReadGuard<'a, K: Ord, V: Value>(pub(crate) PortReadGuard<'a, Node<K, V>, Bounds>, &'a Tree<K, V>);
 
 #[derive(Debug)]
-pub struct TreeWriteGuard<'a, K: Ord, V: Value>(pub(crate) PortWriteGuard<'a, Node<K, V>, Bounds>);
+pub struct TreeWriteGuard<'a, K: Ord, V: Value>(pub(crate) PortWriteGuard<'a, Node<K, V>, Bounds>, &'a Tree<K, V>);
 
 #[derive(Debug)]
-pub struct TreeAllocGuard<'a, K: Ord, V: Value>(pub(crate) PortAllocGuard<'a, Node<K, V>, Bounds>);
+pub struct TreeAllocGuard<'a, K: Ord, V: Value>(pub(crate) PortAllocGuard<'a, Node<K, V>, Bounds>, &'a Tree<K, V>);
 impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
     #[inline]
     pub fn downgrade(self) -> TreeWriteGuard<'a, K, V> {
-        TreeWriteGuard(self.0.downgrade())
+        TreeWriteGuard(self.0.downgrade(), self.1)
     }
     #[inline]
-    pub fn insert(&mut self, key: K, value: V) -> bool {
+    pub fn insert(&mut self, key: K, value: V::Local) -> bool {
+        let value = V::new(value);
         // SAFETY: root is a node in tree
         match unsafe { Tree::search(self.0.meta().root, &key, &self.0) } {
             SearchResult::Here(ptr) => {
@@ -341,14 +343,14 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
         true
     }
     #[inline]
-    pub fn remove(&mut self, key: K) -> Option<V> {
+    pub fn remove(&mut self, key: K) -> Option<V::Into> {
         // SAFETY: root is a node in tree
         match unsafe { Tree::search(self.0.meta().root, &key, &self.0) } {
             SearchResult::Here(ptr) => {
                 // SAFETY: node is the result of a search in tree
                 let ptr = unsafe { Tree::remove_at(ptr, &mut self.0) };
                 // SAFETY: node was found, so it exists
-                Some(self.0.remove(ptr).unwrap().value)
+                Some(self.0.remove(ptr).unwrap().value.into())
             }
             _ => None
         }
@@ -368,17 +370,16 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
 
 macro_rules! impl_Reader {
     ( $type:ident ) => {
-        impl<'a, K: Ord, V: Value> Reader<&K> for $type <'a, K, V> {
-            type Item = V;
+        impl<'a, K: Ord, V: Value> $type <'a, K, V> {
             #[inline]
-            fn get(&self, key: &K) -> Option<&V> {
+            pub fn get(&self, key: &K) -> Option<V::Ref<'_>> {
                 // SAFETY: root is a node in tree
                 let ptr = unsafe { Tree::search(self.0.meta().root, key, &self.0) }
                     .into_here()?;
-                Some(&self.0[ptr].value)
+                Some(self.0[ptr].value.get())
             }
             #[inline]
-            fn contains(&self, key: &K) -> bool {
+            pub fn contains(&self, key: &K) -> bool {
                 // SAFETY: root is a node in tree
                 unsafe { Tree::search(self.0.meta().root, key, &self.0) }
                     .is_here()
@@ -392,16 +393,16 @@ impl_Reader!(TreeAllocGuard);
 
 macro_rules! impl_Writer {
     ( $type:ident ) => {
-        impl<'a, K: Ord, V: Value> Writer<&K, Error> for $type <'a, K, V> {
+        impl<'a, K: Ord, V: Value> $type <'a, K, V> {
             #[inline]
-            fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+            pub fn get_mut(&mut self, key: &K) -> Option<ValueMut<K, V>> {
                 // SAFETY: root is a node in tree
                 let ptr = unsafe { Tree::search(self.0.meta().root, key, &self.0) }
                     .into_here()?;
-                Some(&mut self.0[ptr].value)
+                Some(self.0[ptr].value.get_mut(ptr, self.1))
             }
             #[inline]
-            fn get_pair_mut(&mut self, a: &K, b: &K) -> Result<[Option<&mut V>; 2], Error> {
+            pub fn get_pair_mut(&mut self, a: &K, b: &K) -> Result<[Option<ValueMut<K, V>>; 2], Error> {
                 if a == b {
                     return Err(Error::KeyAlias);
                 }
@@ -412,19 +413,19 @@ macro_rules! impl_Writer {
                 match (a, b) {
                     (SearchResult::Here(a), SearchResult::Here(b)) => {
                         // SAFETY: a and b are checked before this
-                        let [a, b] = self.0.get_pair_mut(a, b).unwrap();
+                        let [node_a, node_b] = self.0.get_pair_mut(a, b).unwrap();
                         Ok([
-                            a.map( |a| &mut a.value ),
-                            b.map( |b| &mut b.value )
+                            node_a.map( |node_a| node_a.value.get_mut(a, self.1) ),
+                            node_b.map( |node_b| node_b.value.get_mut(b, self.1) )
                         ])
                     },
-                    (SearchResult::Here(a), _) => Ok([Some(&mut self.0[a].value), None]),
-                    (_, SearchResult::Here(b)) => Ok([None, Some(&mut self.0[b].value)]),
+                    (SearchResult::Here(a), _) => Ok([Some(self.0[a].value.get_mut(a, self.1)), None]),
+                    (_, SearchResult::Here(b)) => Ok([None, Some(self.0[b].value.get_mut(b, self.1))]),
                     _ => Ok([None, None])
                 }
             }
             #[inline]
-            fn get_mut_with<const N: usize>(&mut self, key: &K, others: [Option<&K>; N]) -> Result<(Option<&mut V>, [Option<&V>; N]), Error> {
+            pub fn get_mut_with<const N: usize>(&mut self, key: &K, others: [Option<&K>; N]) -> Result<(Option<ValueMut<K, V>>, [Option<V::Ref<'_>>; N]), Error> {
                 if others.iter().any( |k| k.is_some_and( |k| k == key ) ) {
                     return Err(Error::KeyAlias)
                 }
@@ -436,10 +437,10 @@ macro_rules! impl_Writer {
                             .into_here()
                     ) );
                     // SAFETY: all keys are checked before this
-                    let (x, others) = self.0.get_mut_with(x, others).unwrap();
+                    let (x_node, others) = self.0.get_mut_with(x, others).unwrap();
                     Ok((
-                        x.map( |x| &mut x.value ),
-                        others.map( |x| x.map( |x| &x.value ) )
+                        x_node.map( |x_node| x_node.value.get_mut(x, self.1) ),
+                        others.map( |x| x.map( |x| x.value.get() ) )
                     ))
                 } else {
                     Ok((None, others.map( |k| k.and_then( |k| self.get(k) ) )))
@@ -504,13 +505,13 @@ macro_rules! impl_ReadOnly {
             /// This behavious like the standard libary binary search for slices.
             #[inline]
             pub fn search_by<F>(&self, compare: F) -> SearchResult<&K>
-                where F: Fn(&K, &V) -> Ordering
+                where F: Fn(&K, V::Ref<'_>) -> Ordering
             {
                 // SAFETY: root is part of tree
                 unsafe {
                     Tree::search_by(
                         self.0.meta().root,
-                        |node| compare(&node.key, &node.value) ,
+                        |node| compare(&node.key, node.value.get()) ,
                         &self.0
                     ).map( |index| &self.0[index].key )
                 }

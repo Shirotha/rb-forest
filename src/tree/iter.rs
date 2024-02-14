@@ -1,7 +1,6 @@
 use std::{
-    marker::PhantomData,
-    mem::ManuallyDrop,
-    ptr::read
+    ptr::read,
+    marker::PhantomData
 };
 
 #[cfg(feature = "sorted-iter")]
@@ -24,8 +23,8 @@ pub struct Iter<'a, K: Ord, V, R: TreeReader<K, V>> {
     pub(crate) back: NodeRef,
     pub(crate) _phantom: PhantomData<(K, V)>
 }
-impl<'a, K: Ord + 'a, V: 'a, R: TreeReader<K, V>> Iterator for Iter<'a, K, V, R> {
-    type Item = (&'a K, &'a V);
+impl<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>> Iterator for Iter<'a, K, V, R> {
+    type Item = (&'a K, V::Ref<'a>);
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         let current = self.front?;
@@ -36,10 +35,10 @@ impl<'a, K: Ord + 'a, V: 'a, R: TreeReader<K, V>> Iterator for Iter<'a, K, V, R>
         } else {
             self.front = node.order[1];
         }
-        Some((&node.key, &node.value))
+        Some((&node.key, node.value.get()))
     }
 }
-impl<'a, K: Ord + 'a, V: 'a, R: TreeReader<K, V>> DoubleEndedIterator for Iter<'a, K, V, R> {
+impl<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>> DoubleEndedIterator for Iter<'a, K, V, R> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         let current = self.back?;
@@ -50,12 +49,12 @@ impl<'a, K: Ord + 'a, V: 'a, R: TreeReader<K, V>> DoubleEndedIterator for Iter<'
         } else {
             self.back = node.order[0];
         }
-        Some((&node.key, &node.value))
+        Some((&node.key, node.value.get()))
     }
 }
 #[cfg(feature = "sorted-iter")]
 impl<'a, K: Ord, V, R: TreeReader<K, V>> SortedByKey for Iter<'a, K, V, R> {}
-
+// TODO: do a full cumulant recalculation at Drop
 #[derive(Debug)]
 pub struct IterMut<'a, K: Ord, V, W: TreeWriter<K, V>> {
     pub(crate) tree: &'a mut W,
@@ -63,8 +62,8 @@ pub struct IterMut<'a, K: Ord, V, W: TreeWriter<K, V>> {
     pub(crate) back: NodeRef,
     pub(crate) _phantom: PhantomData<(K, V)>
 }
-impl<'a, K: Ord + 'a, V: 'a, W: TreeWriter<K, V>> Iterator for IterMut<'a, K, V, W> {
-    type Item = (&'a K, &'a mut V);
+impl<'a, K: Ord + 'a, V: Value + 'a, W: TreeWriter<K, V>> Iterator for IterMut<'a, K, V, W> {
+    type Item = (&'a K, V::Mut<'a>);
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         let current = self.front?;
@@ -77,7 +76,7 @@ impl<'a, K: Ord + 'a, V: 'a, W: TreeWriter<K, V>> Iterator for IterMut<'a, K, V,
         }
         // SAFETY: there is no other way to access tree
         let node = unsafe { (node as *mut Node<K, V>).as_mut().unwrap() };
-        Some((&node.key, &mut node.value))
+        Some((&node.key, unsafe { node.value.get_mut_unchecked() }))
     }
 }
 
@@ -94,7 +93,7 @@ impl<'a, K: Ord + 'a, V: 'a, W: TreeWriter<K, V>> DoubleEndedIterator for IterMu
         }
         // SAFETY: there is no other way to access tree
         let node = unsafe { (node as *mut Node<K, V>).as_mut().unwrap() };
-        Some((&node.key, &mut node.value))
+        Some((&node.key, unsafe { node.value.get_mut_unchecked() }))
     }
 }
 #[cfg(feature = "sorted-iter")]
@@ -105,7 +104,7 @@ pub struct IntoIter<K: Ord, V: Value> {
     port: Port<Node<K, V>, Bounds>
 }
 impl<K: Ord, V: Value> Iterator for IntoIter<K, V> {
-    type Item = (K, V);
+    type Item = (K, V::Into);
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         let mut port = self.port.alloc();
@@ -121,7 +120,7 @@ impl<K: Ord, V: Value> Iterator for IntoIter<K, V> {
         } else {
             meta.range[0] = node.order[1];
         }
-        Some((node.key, node.value))
+        Some((node.key, node.value.into()))
     }
 }
 impl<K: Ord, V: Value> DoubleEndedIterator for IntoIter<K, V> {
@@ -140,7 +139,7 @@ impl<K: Ord, V: Value> DoubleEndedIterator for IntoIter<K, V> {
         } else {
             meta.range[1] = node.order[0];
         }
-        Some((node.key, node.value))
+        Some((node.key, node.value.into()))
     }
 }
 impl<K: Ord, V: Value> ExactSizeIterator for IntoIter<K, V> {}
@@ -251,10 +250,10 @@ impl<K: Ord, V: Value> Tree<K, V> {
     ///
     /// For a safe version of this function use the 'sorted-iter' feature.
     // TODO: make version that takes a slice, so there is no need to allocate (also try using skip/take for (exactsize)iterator version)
-    pub(crate) unsafe fn from_sorted_iter_unchecked(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V)>) -> Self {
+    pub(crate) unsafe fn from_sorted_slice_unchecked(port: Port<Node<K, V>, Bounds>, items: &[(K, V::Local)]) -> Self {
         fn build_tree<K: Ord, V: Value>(
             port: &mut PortAllocGuard<Node<K, V>, Bounds>,
-            items: &[(K, V)], parent: NodeRef, color: Color
+            items: &[(K, V::Local)], parent: NodeRef, color: Color
         ) -> [NodeRef; 3]
         {
             let len = items.len();
@@ -263,6 +262,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 1 => {
                     // SAFETY: items is not empty
                     let (key, value) = unsafe { read(&items[0]) };
+                    let value = V::new(value);
                     let mut leaf = Node::new(key, value, color);
                     leaf.parent = parent;
                     let this = Some(port.insert(leaf));
@@ -277,6 +277,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             let (this, upper) = unsafe { rest.split_at_unchecked(1) };
             // SAFETY: index corresponds to pivot
             let (key, value) = unsafe { read(&this[0]) };
+            let value = V::new(value);
             let mut root = Node::new(key, value, color);
             root.parent = parent;
             let index = port.insert(root);
@@ -300,11 +301,10 @@ impl<K: Ord, V: Value> Tree<K, V> {
             ]
         }
 
-        let items = ManuallyDrop::new(iter.into_iter().collect::<Box<[_]>>());
-        if items.is_empty() {
+        let len = items.len();
+        if len == 0 {
             return Self { port }
         }
-        let len = items.len();
         let height = usize::BITS - len.leading_zeros();
         let color = if height & 1 == 0 { Color::Black }
             else { Color::Red };
@@ -326,9 +326,13 @@ impl<K: Ord, V: Value> Tree<K, V> {
         }
         Self { port }
     }
+    pub(crate) unsafe fn from_sorted_iter_unchecked(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V::Local)>) -> Self {
+        let items = iter.into_iter().collect::<Box<[_]>>();
+        Self::from_sorted_slice_unchecked(port, &items)
+    }
     #[cfg(feature = "sorted-iter")]
     #[inline(always)]
-    pub(crate) fn from_sorted_iter(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V)> + SortedByKey) -> Self {
+    pub(crate) fn from_sorted_iter(port: Port<Node<K, V>, Bounds>, iter: impl IntoIterator<Item = (K, V::Local)> + SortedByKey) -> Self {
         // SAFETY: guarantied by trait
         unsafe { Self::from_sorted_iter_unchecked(port, iter) }
     }

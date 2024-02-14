@@ -1,4 +1,5 @@
-#![feature(trait_alias, derive_const, const_trait_impl, impl_trait_in_assoc_type, const_mut_refs)]
+#![feature(trait_alias, type_alias_impl_trait)]
+#![feature(derive_const, const_trait_impl, impl_trait_in_assoc_type, const_mut_refs)]
 #![feature(vec_push_within_capacity, slice_split_at_unchecked)]
 #![feature(get_many_mut, maybe_uninit_uninit_array, maybe_uninit_array_assume_init)]
 #![feature(try_blocks, try_trait_v2)]
@@ -19,7 +20,7 @@ use sorted_iter::sorted_pair_iterator::SortedByKey;
 
 use crate::{
     arena::{Arena, Port},
-    tree::{Tree, Node, Bounds, Value}
+    tree::{Tree, Node, Bounds, Value, NoCumulant}
 };
 
 pub struct DeferDiscard(bool);
@@ -94,16 +95,21 @@ impl<K: Ord, V: Value> WeakForest<K, V> {
         Tree::new(self.free_port.split_with_meta(Bounds::default()))
     }
     /// # Safety
+    /// It is assumed that the given slice is sorted by K in incresing order.
+    pub unsafe fn insert_sorted_slice_unchecked(&mut self, items: &[(K, V::Local)]) -> Tree<K, V> {
+        Tree::from_sorted_slice_unchecked(self.free_port.split_with_meta(Bounds::default()), items)
+    }
+    /// # Safety
     /// It is assumed that the given iterator is sorted by K in incresing order.
     ///
     /// For a safe version of this function use the 'sorted-iter' feature.
     #[inline]
-    pub unsafe fn insert_sorted_iter_unchecked(&mut self, iter: impl IntoIterator<Item = (K, V)>) -> Tree<K, V> {
+    pub unsafe fn insert_sorted_iter_unchecked(&mut self, iter: impl IntoIterator<Item = (K, V::Local)>) -> Tree<K, V> {
         Tree::from_sorted_iter_unchecked(self.free_port.split_with_meta(Bounds::default()), iter)
     }
     #[cfg(feature = "sorted-iter")]
     #[inline]
-    pub fn insert_sorted_iter(&mut self, iter: impl IntoIterator<Item = (K, V)> + SortedByKey) -> Tree<K, V> {
+    pub fn insert_sorted_iter(&mut self, iter: impl IntoIterator<Item = (K, V::Local)> + SortedByKey) -> Tree<K, V> {
         Tree::from_sorted_iter(self.free_port.split_with_meta(Bounds::default()), iter)
     }
 }
@@ -112,11 +118,13 @@ impl<K: Ord, V: Value> Default for WeakForest<K, V> {
     fn default() -> Self { Self::new() }
 }
 
+pub type SimpleWeakForest<K, V> = WeakForest<K, NoCumulant<V>>;
+
 pub mod prelude {
     pub use crate::{
-        WeakForest,
+        WeakForest, SimpleWeakForest,
         tree::{
-            NoCumulant, WithCumulant,
+            NoCumulant, with_cumulant,
             SearchResult
         }
     };
@@ -217,10 +225,10 @@ mod test {
             assert_eq!(meta.black_height, 0, "empty tree has no black nodes");
         }
     }
-    fn print_subtree<K, V>(root: NodeRef, depth: u8, markers: u32,
-        tree: &impl TreeReader<K, V>
+    fn print_subtree<'a, K, V>(root: NodeRef, depth: u8, markers: u32,
+        tree: &'a impl TreeReader<K, V>
     )
-        where K: Ord + std::fmt::Debug, V: Value + std::fmt::Debug
+        where K: Ord + std::fmt::Debug + 'a, V: Value + 'a, V::Ref<'a>: std::fmt::Debug
     {
         for i in 0..depth {
             if markers & (1 << i) == 0 {
@@ -235,13 +243,13 @@ mod test {
                 return;
             };
         let node = &tree[root];
-        println!("[{}] {:?} => {:?}", if node.is_red() { "R" } else { "B" }, &node.key, &node.value);
+        println!("[{}] {:?} => {:?}", if node.is_red() { "R" } else { "B" }, &node.key, node.value.get());
         print_subtree(node.children[0], depth + 1, markers, tree);
         print_subtree(node.children[1], depth + 1, markers | (1 << (depth + 1)), tree);
     }
     #[allow(unused)]
-    fn print_tree<K, V>(tree: &impl TreeReader<K, V>)
-        where K: Ord + std::fmt::Debug, V: Value + std::fmt::Debug
+    fn print_tree<'a, K, V>(tree: &'a impl TreeReader<K, V>)
+        where K: Ord + std::fmt::Debug + 'a, V: Value + 'a, V::Ref<'a>: std::fmt::Debug
     {
         print_subtree(tree.meta().root, 0, 1, tree);
     }
@@ -250,13 +258,13 @@ mod test {
     #[test]
     fn insert_remove() {
         let values = vec![1, 7, 8, 9, 10, 6, 5, 2, 3, 4, 0, 11];
-        let mut forest = WeakForest::new();
+        let mut forest = SimpleWeakForest::new();
         let mut tree = forest.insert();
         {
             let mut alloc = tree.alloc();
             for x in values.iter().copied() {
                 println!("==================== +{} ====================", x);
-                alloc.insert(x, NoCumulant(x));
+                alloc.insert(x, x);
                 print_tree(&alloc.0);
                 validate_rb_tree(&alloc.0);
             }
@@ -265,26 +273,26 @@ mod test {
                 let value = alloc.remove(x);
                 print_tree(&alloc.0);
                 validate_rb_tree(&alloc.0);
-                assert_eq!(value, Some(NoCumulant(x)));
+                assert_eq!(value, Some(x));
             }
         }
     }
     #[test]
     fn iter() {
         let mut values = vec![1, 7, 8, 9, 10, 6, 5, 2, 3, 4, 0, 11];
-        let mut forest = WeakForest::with_capacity(values.len());
+        let mut forest = SimpleWeakForest::with_capacity(values.len());
         let mut tree = forest.insert();
         {
             let mut alloc = tree.alloc();
             for x in values.iter().copied() {
-                alloc.insert(x, NoCumulant(x));
+                alloc.insert(x, x);
             }
             print_tree(&alloc.0);
         }
         values.sort_unstable();
         {
             let read = tree.read();
-            let result = read.iter().map( |(_, v)| v.0 ).collect::<Vec<_>>();
+            let result = read.iter().map( |(_, v)| *v ).collect::<Vec<_>>();
             assert_eq!(&values, &result);
         }
     }
@@ -293,9 +301,9 @@ mod test {
         const N: usize = 5;
         for i in 0..=N {
             println!("==================== {} ====================", i);
-            let mut forest = WeakForest::with_capacity(N);
+            let mut forest = SimpleWeakForest::with_capacity(N);
             let lower = unsafe { forest.insert_sorted_iter_unchecked(
-                (0..i).map( |n| (n, NoCumulant(n)) )
+                (0..i).map( |n| (n, n) )
             ) };
             {
                 let read = lower.read();
@@ -303,7 +311,7 @@ mod test {
                 validate_rb_tree(&read.0);
             }
             let higher = unsafe { forest.insert_sorted_iter_unchecked(
-                (i..N).map( |n| (n, NoCumulant(n)) )
+                (i..N).map( |n| (n, n) )
             ) };
             {
                 let read = higher.read();
@@ -327,10 +335,10 @@ mod test {
         let n = items.len();
         for i in 0..11 {
             println!("==================== {} ====================", i);
-            let mut forest = WeakForest::with_capacity(n);
+            let mut forest = SimpleWeakForest::with_capacity(n);
             let tree = forest.insert_sorted_iter(
                 items.iter().copied()
-                    .map( |i| (i, NoCumulant(i)) )
+                    .map( |i| (i, i) )
                     .assume_sorted_by_key()
             );
             {
@@ -341,7 +349,7 @@ mod test {
             let j = items.binary_search(&i);
             let (lower, pivot, upper) = tree.split(&i);
             if j.is_ok() {
-                assert_eq!(pivot, Some(NoCumulant(i)));
+                assert_eq!(pivot, Some(i));
             } else {
                 assert_eq!(pivot, None);
             }
@@ -373,9 +381,9 @@ mod test {
     #[test]
     fn union() {
         const N: usize = 10;
-        let mut forest = WeakForest::with_capacity(N << 1);
+        let mut forest = SimpleWeakForest::with_capacity(N << 1);
         let even = unsafe { forest.insert_sorted_iter_unchecked(
-            (0..N).map( |n| (2*n, NoCumulant(n)) )
+            (0..N).map( |n| (2*n, n) )
         ) };
         {
             let read = even.read();
@@ -383,7 +391,7 @@ mod test {
             validate_rb_tree(&read.0);
         }
         let odd = unsafe { forest.insert_sorted_iter_unchecked(
-            (0..N).map( |n| (2*n+1, NoCumulant(n)) )
+            (0..N).map( |n| (2*n+1, n) )
         ) };
         {
             let read = odd.read();
@@ -405,10 +413,10 @@ mod test {
     #[test]
     fn search() {
         const N: usize = 5;
-        let mut forest = WeakForest::with_capacity(N);
+        let mut forest = SimpleWeakForest::with_capacity(N);
         let tree = forest.insert_sorted_iter(
             (0..N)
-                .map( |i| (2*i+1, NoCumulant(2*i+1)) )
+                .map( |i| (2*i+1, 2*i+1) )
                 .assume_sorted_by_key()
         );
         {
@@ -416,7 +424,7 @@ mod test {
             print_tree(&read.0);
             validate_rb_tree(&read.0);
             for i in 0..=(N<<1) {
-                let result = read.search_by( |_, v| v.0.cmp(&i) );
+                let result = read.search_by( |_, v| v.cmp(&i) );
                 if i & 1 == 1 {
                     assert_eq!(result, SearchResult::Here(&i));
                 } else {
