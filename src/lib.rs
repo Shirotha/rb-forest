@@ -125,7 +125,7 @@ pub mod prelude {
         WeakForest, SimpleWeakForest,
         tree::{
             NoCumulant, with_cumulant,
-            SearchResult
+            SearchResult, SearchAction
         }
     };
 }
@@ -424,7 +424,7 @@ mod test {
             print_tree(&read.0);
             validate_rb_tree(&read.0);
             for i in 0..=(N<<1) {
-                let result = read.search_by( |_, v| v.cmp(&i) );
+                let result = read.search( |_, v| v.cmp(&i) );
                 if i & 1 == 1 {
                     assert_eq!(result, SearchResult::Here(&i));
                 } else {
@@ -433,6 +433,31 @@ mod test {
                         SearchResult::RightOf(prev) => assert_eq!(prev, &(i - 1)),
                         _ => panic!("unexpected search result")
                     }
+                }
+            }
+        }
+    }
+    #[cfg(feature = "sorted-iter")]
+    #[test]
+    fn filter() {
+        const N: usize = 5;
+        let mut forest = SimpleWeakForest::with_capacity(N);
+        let tree = forest.insert_sorted_iter(
+            (0..N)
+                .map( |i| (i, i) )
+                .assume_sorted_by_key()
+        );
+        {
+            let read = tree.read();
+            print_tree(&read.0);
+            validate_rb_tree(&read.0);
+            for i in 0..=N {
+                let mut result = read.filter( |_, v| SearchAction::new(true, *v < i, *v < i) ).map( |(_, v)| *v ).collect::<Vec<_>>();
+                println!("v < {}: {:?}", i, result);
+                assert_eq!(result.len(), i);
+                result.sort_unstable();
+                for (i, v) in result.into_iter().enumerate() {
+                    assert_eq!(i, v);
                 }
             }
         }

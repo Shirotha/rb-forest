@@ -23,7 +23,7 @@ impl const Not for Color {
 }
 
 #[derive(Debug)]
-pub struct ValueMut<'a, K: Ord, V: Value>(V::Mut<'a>, Index, &'a Tree<K, V>);
+pub struct ValueMut<'a, K: Ord, V: Value>(pub(crate) V::Mut<'a>, pub(crate) Index, pub(crate) &'a Tree<K, V>);
 impl<'a, K: Ord, V: Value> const Deref for ValueMut<'a, K, V> {
     type Target = V::Mut<'a>;
     #[inline(always)]
@@ -63,12 +63,6 @@ pub trait Value {
     fn cumulant(&self) -> &Self::Cumulant;
     fn update_cumulant(&mut self, children: [Option<&Self::Cumulant>; 2]);
     fn has_cumulant() -> bool;
-    #[inline(always)]
-    fn get_mut<'a, K: Ord>(&'a mut self, ptr: Index, tree: &'a Tree<K, Self>) -> ValueMut<'a, K, Self>
-        where Self: Sized
-    {
-        ValueMut(unsafe { self.get_mut_unchecked() }, ptr, tree)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

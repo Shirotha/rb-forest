@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    Reader, Writer, discard,
+    Writer, discard,
     arena::{
         Meta, MetaMut,
         PortReadGuard, PortWriteGuard, PortAllocGuard
@@ -147,7 +147,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
             // SAFETY: pivot exists
             let other = alloc.0.remove(pivot).unwrap();
             let node = &mut alloc.0[other_root];
-            // TODO: actually to the propagation after building the tree
+            // SAFETY: propagation is already done in the call to join later
             merge(&mut unsafe { node.value.get_mut_unchecked() }, other.value);
         }
         let left = left.union_merge(other_left, merge.clone());
@@ -368,6 +368,21 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
     }
 }
 
+/*
+   #[inline(always)]
+    fn get_mut<'a, K: Ord>(&'a mut self, ptr: Index, tree: &'a Tree<K, Self>) -> ValueMut<'a, K, Self>
+        where Self: Sized
+    {
+        ValueMut(unsafe { self.get_mut_unchecked() }, ptr, tree)
+    }
+ */
+
+macro_rules! value_get_mut {
+    ( $node:expr , $ptr:expr , $tree:expr ) => {
+        ValueMut(unsafe { $node .value.get_mut_unchecked() }, $ptr , $tree )
+    };
+}
+
 macro_rules! impl_Reader {
     ( $type:ident ) => {
         impl<'a, K: Ord, V: Value> $type <'a, K, V> {
@@ -399,7 +414,7 @@ macro_rules! impl_Writer {
                 // SAFETY: root is a node in tree
                 let ptr = unsafe { Tree::search(self.0.meta().root, key, &self.0) }
                     .into_here()?;
-                Some(self.0[ptr].value.get_mut(ptr, self.1))
+                Some(value_get_mut!(self.0[ptr], ptr, self.1))
             }
             #[inline]
             pub fn get_pair_mut(&mut self, a: &K, b: &K) -> Result<[Option<ValueMut<K, V>>; 2], Error> {
@@ -415,12 +430,12 @@ macro_rules! impl_Writer {
                         // SAFETY: a and b are checked before this
                         let [node_a, node_b] = self.0.get_pair_mut(a, b).unwrap();
                         Ok([
-                            node_a.map( |node_a| node_a.value.get_mut(a, self.1) ),
-                            node_b.map( |node_b| node_b.value.get_mut(b, self.1) )
+                            node_a.map( |node_a| value_get_mut!(node_a, a, self.1) ),
+                            node_b.map( |node_b| value_get_mut!(node_b, b, self.1) )
                         ])
                     },
-                    (SearchResult::Here(a), _) => Ok([Some(self.0[a].value.get_mut(a, self.1)), None]),
-                    (_, SearchResult::Here(b)) => Ok([None, Some(self.0[b].value.get_mut(b, self.1))]),
+                    (SearchResult::Here(a), _) => Ok([Some(value_get_mut!(self.0[a], a, self.1)), None]),
+                    (_, SearchResult::Here(b)) => Ok([None, Some(value_get_mut!(self.0[b], b, self.1))]),
                     _ => Ok([None, None])
                 }
             }
@@ -439,7 +454,7 @@ macro_rules! impl_Writer {
                     // SAFETY: all keys are checked before this
                     let (x_node, others) = self.0.get_mut_with(x, others).unwrap();
                     Ok((
-                        x_node.map( |x_node| x_node.value.get_mut(x, self.1) ),
+                        x_node.map( |x_node| value_get_mut!(x_node, x, self.1) ),
                         others.map( |x| x.map( |x| x.value.get() ) )
                     ))
                 } else {
@@ -499,12 +514,17 @@ macro_rules! impl_ReadOnly {
                 let [Some(min), Some(max)] = self.0.meta().range else { return None };
                 Some((&self.0[min].key)..=(&self.0[max].key))
             }
+            #[inline]
+            pub fn cumulant(&self) -> Option<&V::Cumulant> {
+                let root = self.0.meta().root?;
+                Some(self.0[root].value.cumulant())
+            }
             /// Searches the tree using the given comparison function.
             /// The tree has to be sorted by compare or the result of this are meaningless.
             ///
             /// This behavious like the standard libary binary search for slices.
             #[inline]
-            pub fn search_by<F>(&self, compare: F) -> SearchResult<&K>
+            pub fn search<F>(&self, compare: F) -> SearchResult<&K>
                 where F: Fn(&K, V::Ref<'_>) -> Ordering
             {
                 // SAFETY: root is part of tree

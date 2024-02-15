@@ -8,7 +8,9 @@ mod cursor;
 pub use cursor::*;
 
 use std::{
-    cmp::Ordering, mem::swap, ops::{Index as IndexRO, IndexMut}
+    cmp::Ordering,
+    mem::swap,
+    ops::{Index as IndexRO, IndexMut}
 };
 
 use thiserror::Error;
@@ -85,7 +87,11 @@ impl<K: Ord, V: Value> Tree<K, V> {
     pub(crate) fn new(port: Port<Node<K, V>, Bounds>) -> Self {
         Self { port }
     }
+    /// Calculate only the cumulant on the given node.
+    ///
     /// # Safety
+    /// After this all ancestors of the node have invalid cumulants.
+    ///
     /// The left and right pointers have to be pointing to the children of the node pointer.
     ///
     /// The node pointer has to be owned by tree.
@@ -99,6 +105,8 @@ impl<K: Ord, V: Value> Tree<K, V> {
         let right = right.map( |right| right.value.cumulant() );
         node.value.update_cumulant([left, right]);
     }
+    /// Calculate cumulants starting from the given node and updating all ancestors
+    ///
     /// # Safety
     /// The node pointer has to be owned by tree.
     #[inline]
@@ -111,6 +119,32 @@ impl<K: Ord, V: Value> Tree<K, V> {
             ptr = node.parent;
             Self::update_cumulant(index, tree);
         }
+    }
+    /// Calculate cumulants of the sub-tree rooted at the given node.
+    ///
+    /// # Safety
+    /// After this all ancestors of the node have invalid cumulants.
+    ///
+    /// The node pointer has to be owned by tree.
+    #[inline(always)]
+    unsafe fn update_cumulants(ptr: NodeIndex,
+        tree: &mut impl TreeWriter<K, V>
+    ) {
+        fn helper<K: Ord, V: Value>(ptr: NodeIndex,
+            tree: &mut impl TreeWriter<K, V>
+        ) -> *const V::Cumulant {
+            let [left, right] = tree[ptr].children;
+            let left = left.map( |left| helper(left, tree) );
+            let right = right.map( |right| helper(right, tree) );
+            let node = &mut tree[ptr];
+            // SAFETY: cumulants will always be the already final values from nested call
+            let left = left.and_then( |left| unsafe { left.as_ref() } );
+            let right = right.and_then( |left| unsafe { left.as_ref() } );
+            node.value.update_cumulant([left, right]);
+            node.value.cumulant()
+        }
+
+        helper(ptr, tree);
     }
     /// # Safety
     /// The node pointers hve to be owned by tree.
@@ -337,7 +371,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
         let node = &tree[ptr];
         let parent = node.parent;
         let color = node.color;
-        // TODO: confirm ordering works corretly with the swaps
         let [prev, next] = node.order;
         match children {
             [Some(left), None] => {
@@ -554,7 +587,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 this_meta.root = ptr;
                 this_meta.black_height += 1;
                 this[pivot].color = Color::Black;
-                // TODO: is there a need to change double black to red here?
             }
             if V::has_cumulant() {
                 Tree::propagate_cumulant(pivot, this);

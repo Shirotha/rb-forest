@@ -1,6 +1,5 @@
 use std::{
-    ptr::read,
-    marker::PhantomData
+    cmp::Ordering, collections::VecDeque, marker::PhantomData, mem::transmute, ptr::read
 };
 
 #[cfg(feature = "sorted-iter")]
@@ -10,13 +9,13 @@ use crate::{
     discard,
     arena::{Meta, MetaMut, Port, PortAllocGuard},
     tree::{
-        Bounds, Color, Node, NodeRef, Tree, Value,
+        Bounds, Color, Node, NodeIndex, NodeRef, Tree, Value,
         TreeReader, TreeWriter,
         TreeAllocGuard, TreeReadGuard, TreeWriteGuard,
     }
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Iter<'a, K: Ord, V, R: TreeReader<K, V>> {
     pub(crate) tree: &'a R,
     pub(crate) front: NodeRef,
@@ -54,7 +53,7 @@ impl<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>> DoubleEndedIterator fo
 }
 #[cfg(feature = "sorted-iter")]
 impl<'a, K: Ord, V, R: TreeReader<K, V>> SortedByKey for Iter<'a, K, V, R> {}
-// TODO: do a full cumulant recalculation at Drop
+
 #[derive(Debug)]
 pub struct IterMut<'a, K: Ord, V, W: TreeWriter<K, V>> {
     pub(crate) tree: &'a mut W,
@@ -76,10 +75,10 @@ impl<'a, K: Ord + 'a, V: Value + 'a, W: TreeWriter<K, V>> Iterator for IterMut<'
         }
         // SAFETY: there is no other way to access tree
         let node = unsafe { (node as *mut Node<K, V>).as_mut().unwrap() };
+        // SAFRTY: cumulants will be updated on drop
         Some((&node.key, unsafe { node.value.get_mut_unchecked() }))
     }
 }
-
 impl<'a, K: Ord + 'a, V: 'a, W: TreeWriter<K, V>> DoubleEndedIterator for IterMut<'a, K, V, W> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
@@ -93,11 +92,25 @@ impl<'a, K: Ord + 'a, V: 'a, W: TreeWriter<K, V>> DoubleEndedIterator for IterMu
         }
         // SAFETY: there is no other way to access tree
         let node = unsafe { (node as *mut Node<K, V>).as_mut().unwrap() };
+        // SAFRTY: cumulants will be updated on drop
         Some((&node.key, unsafe { node.value.get_mut_unchecked() }))
     }
 }
 #[cfg(feature = "sorted-iter")]
 impl<'a, K: Ord, V, W: TreeWriter<K, V>> SortedByKey for IterMut<'a, K, V, W> {}
+impl<'a, K: Ord, V: Value, W: TreeWriter<K, V>> Drop for IterMut<'a, K, V, W> {
+    #[inline]
+    fn drop(&mut self) {
+        if V::has_cumulant() {
+            let Some(root) = self.tree.meta().root else { return };
+            // SAFETY: root exists and has no ancestors
+            unsafe { Tree::update_cumulants(root, self.tree); }
+        }
+    }
+}
+
+// TODO: alternative mutable iterator that uses breath-first, bottom-up order so cumulants can be updated in-place
+
 
 #[derive(Debug)]
 pub struct IntoIter<K: Ord, V: Value> {
@@ -249,7 +262,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
     /// Port->meta is expected to be set to its default value
     ///
     /// For a safe version of this function use the 'sorted-iter' feature.
-    // TODO: make version that takes a slice, so there is no need to allocate (also try using skip/take for (exactsize)iterator version)
     pub(crate) unsafe fn from_sorted_slice_unchecked(port: Port<Node<K, V>, Bounds>, items: &[(K, V::Local)]) -> Self {
         fn build_tree<K: Ord, V: Value>(
             port: &mut PortAllocGuard<Node<K, V>, Bounds>,
@@ -311,7 +323,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
         {
             let mut port = port.alloc();
             // NOTE: recursion depth = height + 1
-            let [min, root, max] = build_tree(&mut port, &items, None, color);
+            let [min, root, max] = build_tree(&mut port, items, None, color);
             let meta = port.meta_mut();
             meta.root = root;
             meta.range = [min, max];
@@ -338,4 +350,159 @@ impl<K: Ord, V: Value> Tree<K, V> {
     }
 }
 
-// TODO: Filter/FilterMut iterators (-> use cumulant for early exit)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SearchAction {
+    Neither         = 0b000,
+    OnlyLeft        = 0b001,
+    OnlyRight       = 0b010,
+    Both            = 0b011,
+
+    MatchAndNeither = 0b100,
+    MatchAndLeft    = 0b101,
+    MatchAndRight   = 0b110,
+    MatchAndBoth    = 0b111,
+}
+impl SearchAction {
+    #[inline]
+    pub const fn new(search_left: bool, search_right: bool, is_match: bool) -> Self {
+        unsafe { transmute(
+            (search_left as u8) +
+            ((search_right as u8) << 1) +
+            ((is_match as u8) << 2)
+        ) }
+    }
+    #[inline]
+    pub const fn search_left(&self) -> bool {
+        (*self as u8) & 0x01 != 0
+    }
+    #[inline]
+    pub const fn search_right(&self) -> bool {
+        (*self as u8) & 0x02 != 0
+    }
+    #[inline]
+    pub const fn is_match(&self) -> bool {
+        (*self as u8) & 0x04 != 0
+    }
+}
+// NOTE: this will make filter work the same as search
+impl const From<Ordering> for SearchAction {
+    #[inline]
+    fn from(value: Ordering) -> Self {
+        match value {
+            Ordering::Less => Self::OnlyRight,
+            Ordering::Equal => Self::MatchAndBoth,
+            Ordering::Greater => Self::OnlyLeft
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Filter<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> {
+    pub(crate) tree: &'a R,
+    pub(crate) stack: VecDeque<NodeIndex>,
+    pub(crate) action: F,
+    pub(crate) _phantom: PhantomData<(K, V)>
+}
+impl<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> Filter<'a, K, V, R, F> {
+    fn step(&mut self) -> Option<Option<<Self as Iterator>::Item>> {
+        let ptr = self.stack.pop_back()?;
+        let node = &self.tree[ptr];
+        let action = (self.action)(&node.key, node.value.get());
+        if let (Some(left), true) = (node.children[0], action.search_left()) {
+            self.stack.push_back(left);
+        }
+        if let (Some(right), true) = (node.children[1], action.search_right()) {
+            self.stack.push_back(right);
+        }
+        if action.is_match() {
+            Some(Some((&node.key, node.value.get())))
+        } else {
+            Some(None)
+        }
+    }
+}
+impl<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> Iterator for Filter<'a, K, V, R, F> {
+    type Item = (&'a K, V::Ref<'a>);
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(item) = self.step() {
+            if let Some(item) = item {
+                return Some(item);
+            }
+        }
+        None
+    }
+}
+
+#[derive(Debug)]
+pub struct FilterMut<'a, K: Ord + 'a, V: Value + 'a, W: TreeWriter<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> {
+    pub(crate) tree: &'a mut W,
+    pub(crate) stack: VecDeque<NodeIndex>,
+    pub(crate) action: F,
+    pub(crate) _phantom: PhantomData<(K, V)>
+}
+impl<'a, K: Ord + 'a, V: Value + 'a, W: TreeWriter<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> Iterator for FilterMut<'a, K, V, W, F> {
+    type Item = (&'a K, V::Mut<'a>);
+    fn next(&mut self) -> Option<Self::Item> {
+        let ptr = self.stack.pop_back()?;
+        let node = &mut self.tree[ptr];
+        let action = (self.action)(&node.key, node.value.get());
+        if let (Some(left), true) = (node.children[0], action.search_left()) {
+            self.stack.push_back(left);
+        }
+        if let (Some(right), true) = (node.children[1], action.search_right()) {
+            self.stack.push_back(right);
+        }
+        if action.is_match() {
+            let node = unsafe { (node as *mut Node<K, V>).as_mut().unwrap() };
+            Some((&node.key, unsafe { node.value.get_mut_unchecked() }))
+        } else {
+            None
+        }
+    }
+}
+// TODO: this will update all cumulants, even when filter did exit early
+impl<'a, K: Ord + 'a, V: Value + 'a, W: TreeWriter<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> Drop for FilterMut<'a, K, V, W, F> {
+    #[inline]
+    fn drop(&mut self) {
+        if V::has_cumulant() {
+            let Some(root) = self.tree.meta().root else { return };
+            unsafe { Tree::update_cumulants(root, self.tree); }
+        }
+    }
+}
+
+macro_rules! impl_Filter {
+    ( $type:ident ) => {
+        impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            #[inline]
+            pub fn filter<F: Fn(&K, V::Ref<'_>) -> SearchAction>(&self, action: F) -> Filter<K, V, impl TreeReader<K, V> + 'a, F> {
+                let mut stack = VecDeque::new();
+                if let Some(root) = self.0.meta().root {
+                    stack.push_back(root)
+                }
+                Filter { tree: &self.0, stack, action, _phantom: PhantomData }
+            }
+        }
+    };
+}
+impl_Filter!(TreeReadGuard);
+impl_Filter!(TreeWriteGuard);
+impl_Filter!(TreeAllocGuard);
+
+macro_rules! impl_FilterMut {
+    ( $type:ident ) => {
+        impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            #[inline]
+            pub fn filter_mut<F: Fn(&K, V::Ref<'_>) -> SearchAction>(&mut self, action: F) -> FilterMut<K, V, impl TreeWriter<K, V> + 'a, F> {
+                let mut stack = VecDeque::new();
+                if let Some(root) = self.0.meta().root {
+                    stack.push_back(root)
+                }
+                FilterMut { tree: &mut self.0, stack, action, _phantom: PhantomData }
+            }
+        }
+    };
+}
+impl_FilterMut!(TreeWriteGuard);
+impl_FilterMut!(TreeAllocGuard);
