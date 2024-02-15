@@ -323,11 +323,15 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
                 return false;
             },
             SearchResult::Empty => {
-                let ptr = Some(self.0.insert(Node::new(key, value, Color::Black)));
+                let index = self.0.insert(Node::new(key, value, Color::Black));
+                let ptr = Some(index);
                 let meta = self.0.meta_mut();
                 meta.root = ptr;
                 meta.range = [ptr, ptr];
                 meta.black_height = 1;
+                if V::has_cumulant() {
+                    self.0[index].value.update_cumulant([None, None]);
+                }
             },
             SearchResult::LeftOf(parent) => {
                 let ptr = self.0.insert(Node::new(key, value, Color::Red));
@@ -556,12 +560,15 @@ macro_rules! impl_ReadWrite {
                 match Tree::search(self.0.meta().root, key, &self.0) {
                     SearchResult::Here(_) => return Err(Error::DuplicateKey),
                     SearchResult::Empty => {
-                        // Case 1
                         let meta = self.0.meta_mut();
                         meta.root = Some(ptr);
                         meta.range = [Some(ptr), Some(ptr)];
                         meta.black_height = 1;
-                        self.0[ptr].clear(Color::Black);
+                        let node = &mut self.0[ptr];
+                        node.clear(Color::Black);
+                        if V::has_cumulant() {
+                            node.value.update_cumulant([None, None]);
+                        }
                     },
                     SearchResult::LeftOf(parent) => {
                         self.0[ptr].clear(Color::Red);

@@ -100,16 +100,19 @@ impl<T> const Value for NoCumulant<T> {
     fn has_cumulant() -> bool { false }
 }
 
+// TODO: infer value, cumulant from closure argument types
+// TODO: alternative versions with value, cumulant generic parameters (with custom constraints)
 #[macro_export]
 macro_rules! with_cumulant {
-    { $typename:ident ( $default:expr ) = $update:expr } => {
+    { $typename:ident ( $value:ty , $cumulant:ty => $default:expr ) = $update:expr } => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub struct $typename <T, C>(T, C);
-        impl<T, C, F: Fn(&mut C, &T, [Option<&C>; 2])> const Value for $typename <T, C> {
-            type Local = T;
-            type Cumulant = C;
-            type Ref<'a> = (&'a T, &'a C) where T: 'a, C: 'a, F: 'a;
-            type Mut<'a> = (&'a mut T, &'a C) where T: 'a, C: 'a, F: 'a;
+        pub struct $typename ($value, $cumulant);
+        impl const Value for $typename {
+            type Local = $value ;
+            type Cumulant = $cumulant ;
+            type Ref<'a> = (&'a $value , &'a $cumulant );
+            type Mut<'a> = (&'a mut $value , &'a $cumulant );
+            type Into = $value ;
 
             #[inline(always)]
             fn new(value: Self::Local) -> Self {
@@ -133,7 +136,7 @@ macro_rules! with_cumulant {
             }
             #[inline(always)]
             fn update_cumulant(&mut self, children: [Option<&Self::Cumulant>; 2]) {
-                $update (&mut self.1, &self.0, children)
+                self.1 = $update (&self.0, children)
             }
             #[inline(always)]
             fn has_cumulant() -> bool { true }
