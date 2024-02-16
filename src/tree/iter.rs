@@ -276,6 +276,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
                     let (key, value) = unsafe { read(&items[0]) };
                     let value = V::new(value);
                     let mut leaf = Node::new(key, value, color);
+                    leaf.value.update_cumulant([None, None]);
                     leaf.parent = parent;
                     let this = Some(port.insert(leaf));
                     return [this, this, this];
@@ -306,6 +307,8 @@ impl<K: Ord, V: Value> Tree<K, V> {
             discard! {
                 port[next?].order[0] = this
             };
+            // SAFETY: the nodes will be created bottom-up and all cumulants will be set at the end
+            unsafe { Tree::update_cumulant(index, port) };
             [
                 if pivot == 0 { this } else { min },
                 this,
@@ -349,7 +352,8 @@ impl<K: Ord, V: Value> Tree<K, V> {
         unsafe { Self::from_sorted_iter_unchecked(port, iter) }
     }
 }
-
+/// Possible action after a node visit during a binary search.
+/// This allows for early termination of the search depending on a condition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SearchAction {
@@ -364,6 +368,10 @@ pub enum SearchAction {
     MatchAndBoth    = 0b111,
 }
 impl SearchAction {
+    /// Construct a `SearchAction` using separate flags
+    /// * `search_left` - when this is true the search will continue along the left sub-tree.
+    /// * `search_right` - when this is true the search will continue along the right sub-tree.
+    /// * `is_match` - when this is true the current node is marked as a succesful match of the search.
     #[inline]
     pub const fn new(search_left: bool, search_right: bool, is_match: bool) -> Self {
         unsafe { transmute(

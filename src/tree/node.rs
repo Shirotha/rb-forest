@@ -1,6 +1,9 @@
 use std::ops::{Deref, DerefMut, Not};
 
-use crate::arena::Index;
+use crate::{
+    arena::Index,
+    tree::Tree
+};
 
 pub(crate) type NodeIndex = Index;
 pub(crate) type NodeRef = Option<NodeIndex>;
@@ -21,7 +24,8 @@ impl const Not for Color {
         }
     }
 }
-
+/// Smart pointer to a [Value].
+/// This will ensure that any changes to the value will cause the updated cumulants to be propagated throughout the tree.
 #[derive(Debug)]
 pub struct ValueMut<'a, K: Ord, V: Value>(pub(crate) V::Mut<'a>, pub(crate) Index, pub(crate) &'a Tree<K, V>);
 impl<'a, K: Ord, V: Value> const Deref for ValueMut<'a, K, V> {
@@ -44,14 +48,23 @@ impl<'a, K: Ord, V: Value> const Drop for ValueMut<'a, K, V> {
         unsafe { Tree::propagate_cumulant(self.1, &mut write) }
     }
 }
-
+/// All values meant to be used with [Tree] need to implement this trait.
+///
+/// Instead of implementing this manually, consider using the [NoCumulant] type or
+/// the [with_cumulant] macro.
 #[const_trait]
 pub trait Value {
+    /// Data accossiated with the node itself.
     type Local;
+    /// Data accossiated with the sub-tree rooted at the current node.
     type Cumulant;
+    /// Read-only reference to the value.
     type Ref<'a> where Self: 'a;
+    /// Mutable reference to the value
     type Mut<'a> where Self: 'a;
+    /// Deconstructed value
     type Into;
+    /// Constructs a new value.
     fn new(value: Self::Local) -> Self;
     fn into(self) -> Self::Into;
     fn get(&self) -> Self::Ref<'_>;
@@ -60,11 +73,14 @@ pub trait Value {
     ///
     /// This is safe when `Value::has_cumulant` is `false`
     unsafe fn get_mut_unchecked(&mut self) -> Self::Mut<'_>;
+    /// Cumulant of the current node.
     fn cumulant(&self) -> &Self::Cumulant;
+    // Update the cumulant using the local value of this node and the cumulants of both children.
     fn update_cumulant(&mut self, children: [Option<&Self::Cumulant>; 2]);
+    /// [Value::update_cumulant] will only be called when this returns `true`.
     fn has_cumulant() -> bool;
 }
-
+/// This type implements [Value] without cumulants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoCumulant<T>(T);
 impl<T> const Value for NoCumulant<T> {
@@ -99,24 +115,48 @@ impl<T> const Value for NoCumulant<T> {
     #[inline(always)]
     fn has_cumulant() -> bool { false }
 }
-
-// TODO: infer value, cumulant from closure argument types
-// TODO: alternative versions with value, cumulant generic parameters (with custom constraints)
+/// Generates a new type and implements the [Value] trait.
+///
+/// # Examples
+/// ```rust
+/// with_cumulant!(
+///     WithSum(value: &i32, children: [&i32] = 0) {
+///         value + children[0] + children[1]
+///     }
+/// )
+/// ```
+// TODO: support passing by clone/copy
+// TODO: support for mutating cumulant, instead of return
 #[macro_export]
 macro_rules! with_cumulant {
-    { $typename:ident ( $value:ty , $cumulant:ty => $default:expr ) = $update:expr } => {
+    {
+        $visibility:vis $typename:ident $( <
+            $( $param:tt $( : $( $constraint:path ),+ )? ),*
+        > )? (
+            $valuename:ident : & $valuetype:ty ,
+            $childrenname:ident : [ & $cumulanttype:ty ] = $cumulantdefault:expr
+        )
+        $updatebody:block
+    } => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub struct $typename ($value, $cumulant);
-        impl const Value for $typename {
-            type Local = $value ;
-            type Cumulant = $cumulant ;
-            type Ref<'a> = (&'a $value , &'a $cumulant );
-            type Mut<'a> = (&'a mut $value , &'a $cumulant );
-            type Into = $value ;
+        $visibility struct $typename $( <
+            $( $param $( : $( $constraint ),+ )? ),*
+        > )? ($valuetype, $cumulanttype);
+        impl $( <
+            $( $param $( : $( $constraint ),+ )? ),*
+        > )?
+        const Value for $typename $( <
+            $( $param ),*
+        > )? {
+            type Local = $valuetype ;
+            type Cumulant = $cumulanttype ;
+            type Ref<'a> = (&'a $valuetype , &'a $cumulanttype ) $( where $( $param : 'a ),+ )? ;
+            type Mut<'a> = (&'a mut $valuetype , &'a $cumulanttype ) $( where $( $param : 'a ),+ )? ;
+            type Into = $valuetype ;
 
             #[inline(always)]
             fn new(value: Self::Local) -> Self {
-                Self(value, $default )
+                Self(value, $cumulantdefault )
             }
             #[inline(always)]
             fn into(self) -> Self::Into {
@@ -136,7 +176,14 @@ macro_rules! with_cumulant {
             }
             #[inline(always)]
             fn update_cumulant(&mut self, children: [Option<&Self::Cumulant>; 2]) {
-                self.1 = $update (&self.0, children)
+                let $valuename = &self.0;
+                #[allow(non_snake_case)]
+                let __default__ = $cumulantdefault;
+                let $childrenname = [
+                    children[0].unwrap_or(&__default__),
+                    children[1].unwrap_or(&__default__),
+                ];
+                self.1 = $updatebody;
             }
             #[inline(always)]
             fn has_cumulant() -> bool { true }
@@ -144,8 +191,6 @@ macro_rules! with_cumulant {
     };
 }
 pub use with_cumulant;
-
-use super::Tree;
 
 #[derive(Debug)]
 pub(crate) struct Node<K: Ord, V: Value> {
@@ -156,7 +201,6 @@ pub(crate) struct Node<K: Ord, V: Value> {
     pub children: [NodeRef; 2],
     pub order: [NodeRef; 2]
 }
-
 impl<K: Ord, V: Value> Node<K, V> {
     #[inline]
     pub const fn new(key: K, value: V, color: Color) -> Self {

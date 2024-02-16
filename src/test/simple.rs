@@ -81,11 +81,10 @@ fn split() {
     for i in 0..11 {
         println!("==================== {} ====================", i);
         let mut forest = SimpleWeakForest::with_capacity(n);
-        let tree = forest.insert_sorted_iter(
+        let tree = unsafe { forest.insert_sorted_iter_unchecked(
             items.iter().copied()
                 .map( |i| (i, i) )
-                .assume_sorted_by_key()
-        );
+        ) };
         {
             let read = tree.read();
             print_tree(&read.0);
@@ -122,7 +121,6 @@ fn split() {
         }
     }
 }
-// FIXME: wrong coloring (produces [B: [R: NIL NIL] [R: NIL NIL]] sub-tree (should all be black?))
 #[test]
 fn union() {
     const N: usize = 10;

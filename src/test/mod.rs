@@ -1,6 +1,8 @@
+
 mod simple;
 mod cumulant;
 
+#[cfg(feature = "sorted-iter")]
 use sorted_iter::assume::AssumeSortedByKeyExt;
 
 use crate::{

@@ -39,12 +39,16 @@ pub enum Error {
     #[error("can only join disjoint trees")]
     Overlapping
 }
-
+/// Possible results of a binary search in a [Tree].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchResult<T> {
+    /// Queried tree is empty.
     Empty,
+    /// Searched value is located left of (is smaller than) the found node.
     LeftOf(T),
+    /// Searched value was found at this location.
     Here(T),
+    /// Searched value is located right of (is greater than) the found node.
     RightOf(T)
 }
 impl<T> SearchResult<T> {
@@ -71,17 +75,16 @@ impl<T> SearchResult<T> {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Bounds {
-    pub(crate) root: NodeRef,
-    pub(crate) range: [NodeRef; 2],
-    pub(crate) black_height: u8
+pub(crate) struct Bounds {
+    pub root: NodeRef,
+    pub range: [NodeRef; 2],
+    pub black_height: u8
 }
 
 #[derive(Debug)]
 pub struct Tree<K: Ord, V: Value> {
     port: Port<Node<K, V>, Bounds>
 }
-
 impl<K: Ord, V: Value> Tree<K, V> {
     #[inline(always)]
     pub(crate) fn new(port: Port<Node<K, V>, Bounds>) -> Self {
@@ -186,6 +189,9 @@ impl<K: Ord, V: Value> Tree<K, V> {
         discard! {
             tree[child?].parent = Some(ptr)
         };
+        if V::has_cumulant() {
+            Self::update_cumulant(ptr, tree);
+        }
     }
     /// # Safety
     /// The node pointer has to be owned by tree.
@@ -295,9 +301,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
             } else {
                 if I == J {
                     Tree::rotate::<{1 - I}>(parent, tree);
-                    if V::has_cumulant() {
-                        Tree::update_cumulant(parent, tree);
-                    }
                     ptr = parent;
                 }
                 // SAFETY: guarantied by caller
@@ -309,9 +312,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
                 let grandparent_node = &mut tree[grandparent];
                 grandparent_node.color = Color::Red;
                 Tree::rotate::<I>(grandparent, tree);
-                if V::has_cumulant() {
-                    Tree::update_cumulant(grandparent, tree);
-                }
             }
             ptr
         }
@@ -411,9 +411,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
             if V::has_cumulant() {
                 Self::propagate_cumulant(parent, tree);
             }
-        } else {
-            // DEBUG: commentend out for testing only
-            //tree.meta_mut().black_height -= 1;
         }
         ptr
     }
@@ -454,12 +451,6 @@ impl<K: Ord, V: Value> Tree<K, V> {
                     tree[sibling].color = Color::Red;
                     Tree::rotate::<{1 - I}>(sibling, tree);
                     sibling = close;
-                    if V::has_cumulant() {
-                        Tree::update_cumulant(sibling, tree);
-                        discard! {
-                            Tree::update_cumulant(nephews[I]?, tree)
-                        };
-                    }
                 }
                 // SAFETY: sibling is child of parent, both exist
                 let [Some(sibling_node), Some(parent_node)] = tree.get_pair_mut(sibling, parent).unwrap() else { panic!() };

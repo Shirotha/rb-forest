@@ -3,13 +3,14 @@ use std::marker::PhantomData;
 use crate::{
     arena::{Meta, PortAllocGuard},
     tree::{
-        Tree, Bounds, Node, NodeRef, Value,
+        Tree, Bounds, Node, NodeRef, Value, SearchResult,
         Iter, IterMut,
         TreeReader, TreeWriter,
+        TreeReadGuard, TreeWriteGuard, TreeAllocGuard
     }
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Cursor<'a, K: Ord, V, R: TreeReader<K, V>> {
     tree: &'a R,
     current: NodeRef,
@@ -27,6 +28,72 @@ pub struct CursorMut<'a, K: Ord, V, W: TreeWriter<K, V>> {
 pub struct CursorAlloc<'a, 'b, K: Ord, V: Value> {
     tree: &'a mut PortAllocGuard<'b, Node<K, V>, Bounds>,
     current: NodeRef
+}
+
+macro_rules! impl_Cursor {
+    ( $type:ident ) => {
+        impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            #[inline]
+            pub fn cursor(&self) -> Cursor<K, V, impl TreeReader<K, V> + 'a> {
+                Cursor { tree: &self.0, current: self.0.meta().root, _phantom: PhantomData }
+            }
+            #[inline]
+            pub fn cursor_at(&self, key: &K) -> Cursor<K, V, impl TreeReader<K, V> + 'a> {
+                let current = match unsafe { Tree::search(self.0.meta().root, key, &self.0) } {
+                    SearchResult::Here(ptr) => Some(ptr),
+                    SearchResult::LeftOf(ptr) => self.0[ptr].order[0],
+                    SearchResult::RightOf(ptr) => Some(ptr),
+                    _ => None
+                };
+                Cursor { tree: &self.0, current, _phantom: PhantomData }
+            }
+        }
+    };
+}
+impl_Cursor!(TreeReadGuard);
+impl_Cursor!(TreeWriteGuard);
+impl_Cursor!(TreeAllocGuard);
+
+macro_rules! impl_CursorMut {
+    ( $type:ident ) => {
+        impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            #[inline]
+            pub fn cursor_mut(&mut self) -> CursorMut<K, V, impl TreeWriter<K, V> + 'a> {
+                let current = self.0.meta().root;
+                CursorMut { tree: &mut self.0, current, _phantom: PhantomData }
+            }
+            #[inline]
+            pub fn cursor_mut_at(&mut self, key: &K) -> CursorMut<K, V, impl TreeWriter<K, V> + 'a> {
+                let current = match unsafe { Tree::search(self.0.meta().root, key, &self.0) } {
+                    SearchResult::Here(ptr) => Some(ptr),
+                    SearchResult::LeftOf(ptr) => self.0[ptr].order[0],
+                    SearchResult::RightOf(ptr) => Some(ptr),
+                    _ => None
+                };
+                CursorMut { tree: &mut self.0, current, _phantom: PhantomData }
+            }
+        }
+    };
+}
+impl_CursorMut!(TreeWriteGuard);
+impl_CursorMut!(TreeAllocGuard);
+
+impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
+    #[inline]
+    pub fn cursor_alloc(&mut self) -> CursorAlloc<'_, 'a, K, V> {
+        let current = self.0.meta().root;
+        CursorAlloc { tree: &mut self.0, current }
+    }
+    #[inline]
+    pub fn cursor_alloc_at(&mut self, key: &K) -> CursorAlloc<'_, 'a, K, V> {
+        let current = match unsafe { Tree::search(self.0.meta().root, key, &self.0) } {
+            SearchResult::Here(ptr) => Some(ptr),
+            SearchResult::LeftOf(ptr) => self.0[ptr].order[0],
+            SearchResult::RightOf(ptr) => Some(ptr),
+            _ => None
+        };
+        CursorAlloc { tree: &mut self.0, current }
+    }
 }
 
 pub trait CursorMove {
@@ -59,8 +126,8 @@ macro_rules! impl_CursorMove {
                 where [(); 1 - I]:
             {
                 self.current = self.current.map_or_else(
-                    || self.tree.meta().range[I],
-                    |index| self.tree[index].order[1 - I]
+                    || self.tree.meta().range[1 - I],
+                    |index| self.tree[index].order[I]
                 )
             }
             #[inline]
@@ -141,7 +208,11 @@ macro_rules! impl_CursorPeek {
             fn peek_order<const I: usize>(&self) -> Option<(&K, &V)>
                 where [(); 1 - I]:
             {
-                let neighbour = self.tree[self.current?].order[I]?;
+                let neighbour = if let Some(current) = self.current {
+                    self.tree[current].order[I]?
+                } else {
+                    self.tree.meta().range[1 - I]?
+                };
                 let node = &self.tree[neighbour];
                 Some((&node.key, &node.value))
             }
@@ -166,7 +237,7 @@ impl_CursorPeek!(Cursor;; R: TreeReader<K, V>);
 impl_CursorPeek!(CursorMut;; W: TreeWriter<K, V>);
 impl_CursorPeek!(CursorAlloc; 'b;);
 
-trait CursorWrite<K, V>: CursorRead<K, V> {
+pub trait CursorWrite<K, V>: CursorRead<K, V> {
     fn value_mut(&mut self) -> Option<&mut V>;
 }
 macro_rules! impl_CursorWrite {
@@ -187,7 +258,11 @@ impl<'a, 'b, K: Ord, V: Value> CursorAlloc<'a, 'b, K, V> {
     pub fn remove_order<const I: usize>(&mut self) -> Option<(K, V)>
         where [(); 1 - I]:
     {
-        let neighbour = self.tree[self.current?].order[I]?;
+        let neighbour = if let Some(current) = self.current {
+            self.tree[current].order[I]?
+        } else {
+            self.tree.meta().range[1 - I]?
+        };
         let node = self.tree.remove(neighbour)?;
         Some((node.key, node.value))
     }
