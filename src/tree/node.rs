@@ -8,9 +8,11 @@ use crate::{
 pub(crate) type NodeIndex = Index;
 pub(crate) type NodeRef = Option<NodeIndex>;
 
+/// Node color of a Red-Black Tree.
+/// Since `Red` is zero and `Black` is one, summing colors together gives the black-height of the path.
 #[repr(u8)]
 #[derive_const(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Color {
+pub(crate) enum Color {
     Red = 0,
     Black = 1,
 }

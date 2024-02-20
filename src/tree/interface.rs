@@ -18,18 +18,22 @@ use crate::{
 };
 
 impl<K: Ord, V: Value> Tree<K, V> {
+    /// Aquire read-only access.
     #[inline]
     pub fn read(&self) -> TreeReadGuard<K, V> {
         TreeReadGuard(self.port.read(), self)
     }
+    /// Aquire read-write access.
     #[inline]
     pub fn write(&mut self) -> TreeWriteGuard<K, V> {
         TreeWriteGuard(self.port.write(), self)
     }
+    /// Aquire insert/remove access.
     #[inline]
     pub fn alloc(&mut self) -> TreeAllocGuard<K, V> {
         TreeAllocGuard(self.port.alloc(), self)
     }
+    /// Join two non-overlapping trees together.
     #[inline]
     pub fn union_disjoint(mut self, mut other: Self) -> Result<Self, ((Self, Self), Error)> {
         {
@@ -82,6 +86,8 @@ impl<K: Ord, V: Value> Tree<K, V> {
         // SAFETY: checks were done before this
         Ok(unsafe { Self::join(self, pivot, other).unwrap_unchecked() })
     }
+    /// Join two trees together.
+    /// Nodes that exists on both trees will be merged using a callback function.
     #[inline]
     pub fn union_merge<F>(mut self, mut other: Self, merge: F) -> Self
         where F: Fn(&mut V::Mut<'_>, V) + Clone
@@ -287,6 +293,7 @@ impl<K: Ord, V: Value> Tree<K, V> {
         }
 
     }
+    /// Split tree at a given key, also returns the value at the split location if it exists.
     #[inline]
     pub fn split(self, key: &K) -> (Self, Option<V::Into>, Self) {
         let (mut left, pivot, right) = self.split_node(key);
@@ -372,15 +379,6 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
     }
 }
 
-/*
-   #[inline(always)]
-    fn get_mut<'a, K: Ord>(&'a mut self, ptr: Index, tree: &'a Tree<K, Self>) -> ValueMut<'a, K, Self>
-        where Self: Sized
-    {
-        ValueMut(unsafe { self.get_mut_unchecked() }, ptr, tree)
-    }
- */
-
 macro_rules! value_get_mut {
     ( $node:expr , $ptr:expr , $tree:expr ) => {
         ValueMut(unsafe { $node .value.get_mut_unchecked() }, $ptr , $tree )
@@ -390,6 +388,7 @@ macro_rules! value_get_mut {
 macro_rules! impl_Reader {
     ( $type:ident ) => {
         impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            /// Returns a reference to the value of the given node.
             #[inline]
             pub fn get(&self, key: &K) -> Option<V::Ref<'_>> {
                 // SAFETY: root is a node in tree
@@ -397,6 +396,7 @@ macro_rules! impl_Reader {
                     .into_here()?;
                 Some(self.0[ptr].value.get())
             }
+            /// Returns `true` when the key exists.
             #[inline]
             pub fn contains(&self, key: &K) -> bool {
                 // SAFETY: root is a node in tree
@@ -413,6 +413,7 @@ impl_Reader!(TreeAllocGuard);
 macro_rules! impl_Writer {
     ( $type:ident ) => {
         impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            /// Returns a mutable reference to the value of the given node.
             #[inline]
             pub fn get_mut(&mut self, key: &K) -> Option<ValueMut<K, V>> {
                 // SAFETY: root is a node in tree
@@ -420,6 +421,7 @@ macro_rules! impl_Writer {
                     .into_here()?;
                 Some(value_get_mut!(self.0[ptr], ptr, self.1))
             }
+            /// Returns mutable references to two destinct nodes.
             #[inline]
             pub fn get_pair_mut(&mut self, a: &K, b: &K) -> Result<[Option<ValueMut<K, V>>; 2], Error> {
                 if a == b {
@@ -443,6 +445,7 @@ macro_rules! impl_Writer {
                     _ => Ok([None, None])
                 }
             }
+            /// Returns a mutable reference to a node and read-only references to multiple other nodes.
             #[inline]
             pub fn get_mut_with<const N: usize>(&mut self, key: &K, others: [Option<&K>; N]) -> Result<(Option<ValueMut<K, V>>, [Option<V::Ref<'_>>; N]), Error> {
                 if others.iter().any( |k| k.is_some_and( |k| k == key ) ) {
@@ -470,27 +473,32 @@ macro_rules! impl_Writer {
 }
 impl_Writer!(TreeWriteGuard);
 impl_Writer!(TreeAllocGuard);
-
+/// Estimation of the number of nodes based on the black-height.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LenEstimate {
+    /// This tree is empty.
     Empty,
+    /// This tree has only a root.
     Single,
-    /// this is an upper bound on len
+    /// This is an upper bound on the length.
     More(usize)
 }
 
 macro_rules! impl_ReadOnly {
     ( $type:ident ) => {
         impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            /// Returns `true` when the tree is empty.
             #[inline(always)]
             pub fn is_empty(&self) -> bool {
                 self.0.meta().root.is_none()
             }
+            /// Returns `true` when the root is the only node.
             #[inline]
             pub fn is_single(&self) -> bool {
                 let range = &self.0.meta().range;
                 range[0].is_some() && range[0] == range[1]
             }
+            /// Returns estimation of the number of nodes based on the black-height.
             #[inline]
             pub fn len_estimate(&self) -> LenEstimate {
                 match self.0.meta().range {
@@ -503,21 +511,25 @@ macro_rules! impl_ReadOnly {
                     }
                 }
             }
+            /// Returns the lowest key.
             #[inline]
             pub fn min(&self) -> Option<&K> {
                 let index = self.0.meta().range[0]?;
                 Some(&self.0[index].key)
             }
+            /// Returns the biggest key.
             #[inline]
             pub fn max(&self) -> Option<&K> {
                 let index = self.0.meta().range[1]?;
                 Some(&self.0[index].key)
             }
+            /// Returns the range `min()..=max()`.
             #[inline]
             pub fn range(&self) -> Option<RangeInclusive<&K>> {
                 let [Some(min), Some(max)] = self.0.meta().range else { return None };
                 Some((&self.0[min].key)..=(&self.0[max].key))
             }
+            /// Returns the cumulant of the whole tree.
             #[inline]
             pub fn cumulant(&self) -> Option<&V::Cumulant> {
                 let root = self.0.meta().root?;

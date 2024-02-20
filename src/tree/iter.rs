@@ -14,7 +14,7 @@ use crate::{
         TreeAllocGuard, TreeReadGuard, TreeWriteGuard,
     }
 };
-
+/// Iterate over all [Tree] nodes in order.
 #[derive(Debug, Clone)]
 pub struct Iter<'a, K: Ord, V, R: TreeReader<K, V>> {
     pub(crate) tree: &'a R,
@@ -53,7 +53,7 @@ impl<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>> DoubleEndedIterator fo
 }
 #[cfg(feature = "sorted-iter")]
 impl<'a, K: Ord, V, R: TreeReader<K, V>> SortedByKey for Iter<'a, K, V, R> {}
-
+/// Iterate over all [Tree] nodes in order.
 #[derive(Debug)]
 pub struct IterMut<'a, K: Ord, V, W: TreeWriter<K, V>> {
     pub(crate) tree: &'a mut W,
@@ -111,7 +111,7 @@ impl<'a, K: Ord, V: Value, W: TreeWriter<K, V>> Drop for IterMut<'a, K, V, W> {
 
 // TODO: alternative mutable iterator that uses breath-first, bottom-up order so cumulants can be updated in-place
 
-
+/// Iterate over all [Tree] nodes in order.
 #[derive(Debug)]
 pub struct IntoIter<K: Ord, V: Value> {
     port: Port<Node<K, V>, Bounds>
@@ -162,11 +162,13 @@ impl<K: Ord, V: Value> SortedByKey for IntoIter<K, V> {}
 macro_rules! impl_Iter {
     ( $type:ident ) => {
         impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            /// Returns an in-order iterator
             #[inline]
             pub fn iter(&self) -> Iter<K, V, impl TreeReader<K, V> + 'a> {
                 let [front, back] = self.0.meta().range;
                 Iter { tree: &self.0, front, back, _phantom: PhantomData }
             }
+            /// Returns an in-order iterator confined to the given range of keys (inclusive).
             #[inline]
             pub fn iter_range<const LI: bool, const RI: bool>(&self, min: &K, max: &K) -> Iter<K, V, impl TreeReader<K, V> + 'a> {
                 // SAFETY: root is a node in tree
@@ -189,11 +191,13 @@ impl_Iter!(TreeAllocGuard);
 macro_rules! impl_IterMut {
     ( $type:ident ) => {
         impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            /// Returns a mutable in-order iterator.
             #[inline]
             pub fn iter_mut(&mut self) -> IterMut<K, V, impl TreeWriter<K, V> + 'a> {
                 let [front, back] = self.0.meta().range;
                 IterMut { tree: &mut self.0, front, back, _phantom: PhantomData }
             }
+            /// Returns a mutable in-order iterator confined to the given range of keys (inclusive).
             #[inline]
             pub fn iter_range_mut<const LI: bool, const RI: bool>(&mut self, min: &K, max: &K) -> IterMut<K, V, impl TreeWriter<K, V> + 'a> {
                 // SAFETY: root is a node in tree
@@ -256,12 +260,12 @@ impl<K: Ord, V: Value> IntoIterator for Tree<K, V> {
 }
 
 impl<K: Ord, V: Value> Tree<K, V> {
-    #[inline]
     /// # Safety
     /// It is assumed that the given iterator is sorted by K in incresing order.
     /// Port->meta is expected to be set to its default value
     ///
     /// For a safe version of this function use the 'sorted-iter' feature.
+    #[inline]
     pub(crate) unsafe fn from_sorted_slice_unchecked(port: Port<Node<K, V>, Bounds>, items: &[(K, V::Local)]) -> Self {
         fn build_tree<K: Ord, V: Value>(
             port: &mut PortAllocGuard<Node<K, V>, Bounds>,
@@ -393,6 +397,17 @@ impl SearchAction {
         (*self as u8) & 0x04 != 0
     }
 }
+// NOTE: this makes filter work like the std version
+impl const From<bool> for SearchAction {
+    #[inline]
+    fn from(value: bool) -> Self {
+        if value {
+            Self::MatchAndBoth
+        } else {
+            Self::Both
+        }
+    }
+}
 // NOTE: this will make filter work the same as search
 impl const From<Ordering> for SearchAction {
     #[inline]
@@ -404,7 +419,19 @@ impl const From<Ordering> for SearchAction {
         }
     }
 }
-
+/// Iterator over [Tree] nodes with option to filter results using [SearchAction].
+/// Nodes will be traversed in breath-first ordering.
+///
+/// # Examples
+/// ```rust
+/// use rb_forest::prelude::*;
+/// let mut forest = SimpleWeakForest::new();
+/// let tree = unsafe { forest.insert_sorted_iter_unchecked((0..10).map( |i| (i, i))) };
+/// let read = tree.read();
+/// let mut filtered = read.filter( |_, i| SearchAction::new(true, *i < 5, *i & 1 == 1)).map( |(_, i)| *i ).collect::<Vec<_>>();
+/// filtered.sort();
+/// assert_eq!(filtered, vec![1,3,5]);
+/// ```
 #[derive(Debug, Clone)]
 pub struct Filter<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> {
     pub(crate) tree: &'a R,
@@ -413,6 +440,7 @@ pub struct Filter<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>, F: Fn(&K,
     pub(crate) _phantom: PhantomData<(K, V)>
 }
 impl<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> Filter<'a, K, V, R, F> {
+    #[inline]
     fn step(&mut self) -> Option<Option<<Self as Iterator>::Item>> {
         let ptr = self.stack.pop_back()?;
         let node = &self.tree[ptr];
@@ -432,6 +460,7 @@ impl<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>, F: Fn(&K, V::Ref<'_>) 
 }
 impl<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> Iterator for Filter<'a, K, V, R, F> {
     type Item = (&'a K, V::Ref<'a>);
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(item) = self.step() {
             if let Some(item) = item {
@@ -441,7 +470,20 @@ impl<'a, K: Ord + 'a, V: Value + 'a, R: TreeReader<K, V>, F: Fn(&K, V::Ref<'_>) 
         None
     }
 }
-
+/// Mutable iterator over [Tree] nodes with option to filter results using [SearchAction].
+///
+/// # Examples
+/// ```rust
+/// use rb_forest::prelude::*;
+/// let mut forest = SimpleWeakForest::new();
+/// let mut tree = unsafe { forest.insert_sorted_iter_unchecked((0..5).map( |i| (i, i))) };
+/// let mut write = tree.write();
+/// for (_, i) in write.filter_mut( |_, i| (*i & 1 == 1).into() ) {
+///     println!("{}", i);
+///     *i *= 2;
+/// }
+/// assert_eq!(write.iter().map( |(_, i)| *i ).collect::<Vec<_>>(), vec![0,2,2,6,4]);
+/// ```
 #[derive(Debug)]
 pub struct FilterMut<'a, K: Ord + 'a, V: Value + 'a, W: TreeWriter<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> {
     pub(crate) tree: &'a mut W,
@@ -449,9 +491,9 @@ pub struct FilterMut<'a, K: Ord + 'a, V: Value + 'a, W: TreeWriter<K, V>, F: Fn(
     pub(crate) action: F,
     pub(crate) _phantom: PhantomData<(K, V)>
 }
-impl<'a, K: Ord + 'a, V: Value + 'a, W: TreeWriter<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> Iterator for FilterMut<'a, K, V, W, F> {
-    type Item = (&'a K, V::Mut<'a>);
-    fn next(&mut self) -> Option<Self::Item> {
+impl<'a, K: Ord + 'a, V: Value + 'a, W: TreeWriter<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> FilterMut<'a, K, V, W, F> {
+    #[inline]
+    fn step(&mut self) -> Option<Option<<Self as Iterator>::Item>> {
         let ptr = self.stack.pop_back()?;
         let node = &mut self.tree[ptr];
         let action = (self.action)(&node.key, node.value.get());
@@ -463,10 +505,22 @@ impl<'a, K: Ord + 'a, V: Value + 'a, W: TreeWriter<K, V>, F: Fn(&K, V::Ref<'_>) 
         }
         if action.is_match() {
             let node = unsafe { (node as *mut Node<K, V>).as_mut().unwrap() };
-            Some((&node.key, unsafe { node.value.get_mut_unchecked() }))
+            Some(Some((&node.key, unsafe { node.value.get_mut_unchecked() })))
         } else {
-            None
+            Some(None)
         }
+    }
+}
+impl<'a, K: Ord + 'a, V: Value + 'a, W: TreeWriter<K, V>, F: Fn(&K, V::Ref<'_>) -> SearchAction> Iterator for FilterMut<'a, K, V, W, F> {
+    type Item = (&'a K, V::Mut<'a>);
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(item) = self.step() {
+            if let Some(item) = item {
+                return Some(item);
+            }
+        }
+        None
     }
 }
 // TODO: this will update all cumulants, even when filter did exit early
@@ -483,6 +537,7 @@ impl<'a, K: Ord + 'a, V: Value + 'a, W: TreeWriter<K, V>, F: Fn(&K, V::Ref<'_>) 
 macro_rules! impl_Filter {
     ( $type:ident ) => {
         impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            /// Returns an breath-first iterator, filtered by a function.
             #[inline]
             pub fn filter<F: Fn(&K, V::Ref<'_>) -> SearchAction>(&self, action: F) -> Filter<K, V, impl TreeReader<K, V> + 'a, F> {
                 let mut stack = VecDeque::new();
@@ -501,6 +556,7 @@ impl_Filter!(TreeAllocGuard);
 macro_rules! impl_FilterMut {
     ( $type:ident ) => {
         impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            /// Returns an mutable breath-first iterator, filtered by a function.
             #[inline]
             pub fn filter_mut<F: Fn(&K, V::Ref<'_>) -> SearchAction>(&mut self, action: F) -> FilterMut<K, V, impl TreeWriter<K, V> + 'a, F> {
                 let mut stack = VecDeque::new();

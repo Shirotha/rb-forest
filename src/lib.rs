@@ -103,6 +103,7 @@ impl<K: Ord, V: Value> WeakForest<K, V> {
     ///
     /// # Safety
     /// It is assumed that the given slice is sorted by K in incresing order.
+    #[inline]
     pub unsafe fn insert_sorted_slice_unchecked(&mut self, items: &[(K, V::Local)]) -> Tree<K, V> {
         Tree::from_sorted_slice_unchecked(self.free_port.split_with_meta(Bounds::default()), items)
     }

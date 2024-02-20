@@ -9,21 +9,21 @@ use crate::{
         TreeReadGuard, TreeWriteGuard, TreeAllocGuard
     }
 };
-
+/// Read-only cursor for a [Tree].
 #[derive(Debug, Clone)]
 pub struct Cursor<'a, K: Ord, V, R: TreeReader<K, V>> {
     tree: &'a R,
     current: NodeRef,
     _phantom: PhantomData<(K, V)>
 }
-
+/// Read-write cursor for a [Tree].
 #[derive(Debug)]
 pub struct CursorMut<'a, K: Ord, V, W: TreeWriter<K, V>> {
     tree: &'a mut W,
     current: NodeRef,
     _phantom: PhantomData<(K, V)>
 }
-
+/// Read-write cursor for a [Tree] with option to insert/remove elements.
 #[derive(Debug)]
 pub struct CursorAlloc<'a, 'b, K: Ord, V: Value> {
     tree: &'a mut PortAllocGuard<'b, Node<K, V>, Bounds>,
@@ -33,10 +33,12 @@ pub struct CursorAlloc<'a, 'b, K: Ord, V: Value> {
 macro_rules! impl_Cursor {
     ( $type:ident ) => {
         impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            /// Returns a read-only cursor.
             #[inline]
             pub fn cursor(&self) -> Cursor<K, V, impl TreeReader<K, V> + 'a> {
                 Cursor { tree: &self.0, current: self.0.meta().root, _phantom: PhantomData }
             }
+            /// Returns a read-only cursor starting at the node at/next to given key.
             #[inline]
             pub fn cursor_at(&self, key: &K) -> Cursor<K, V, impl TreeReader<K, V> + 'a> {
                 let current = match unsafe { Tree::search(self.0.meta().root, key, &self.0) } {
@@ -57,11 +59,13 @@ impl_Cursor!(TreeAllocGuard);
 macro_rules! impl_CursorMut {
     ( $type:ident ) => {
         impl<'a, K: Ord, V: Value> $type <'a, K, V> {
+            /// Returns a read-write cursor.
             #[inline]
             pub fn cursor_mut(&mut self) -> CursorMut<K, V, impl TreeWriter<K, V> + 'a> {
                 let current = self.0.meta().root;
                 CursorMut { tree: &mut self.0, current, _phantom: PhantomData }
             }
+            /// Returns a read-write cursor starting at the node at/next to given key.
             #[inline]
             pub fn cursor_mut_at(&mut self, key: &K) -> CursorMut<K, V, impl TreeWriter<K, V> + 'a> {
                 let current = match unsafe { Tree::search(self.0.meta().root, key, &self.0) } {
@@ -79,11 +83,13 @@ impl_CursorMut!(TreeWriteGuard);
 impl_CursorMut!(TreeAllocGuard);
 
 impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
+    /// Returns a read-write cursor with option to insert/remove elements.
     #[inline]
     pub fn cursor_alloc(&mut self) -> CursorAlloc<'_, 'a, K, V> {
         let current = self.0.meta().root;
         CursorAlloc { tree: &mut self.0, current }
     }
+    /// Returns a read-write cursor starting at the node at/next to given key with option to insert/remove elements.
     #[inline]
     pub fn cursor_alloc_at(&mut self, key: &K) -> CursorAlloc<'_, 'a, K, V> {
         let current = match unsafe { Tree::search(self.0.meta().root, key, &self.0) } {
@@ -95,7 +101,7 @@ impl<'a, K: Ord, V: Value> TreeAllocGuard<'a, K, V> {
         CursorAlloc { tree: &mut self.0, current }
     }
 }
-
+/// Trait for cursors that can move between nodes.
 pub trait CursorMove {
     fn move_order<const I: usize>(&mut self) where [(); 1 - I]:;
     fn move_parent(&mut self) -> Option<bool>;
@@ -150,7 +156,7 @@ macro_rules! impl_CursorMove {
 impl_CursorMove!(Cursor;; R: TreeReader<K, V>);
 impl_CursorMove!(CursorMut;; W: TreeWriter<K, V>);
 impl_CursorMove!(CursorAlloc; 'b;);
-
+/// Trait for cursors that can read the current node.
 pub trait CursorRead<K, V> {
     fn key(&self) -> Option<&K>;
     fn value(&self) -> Option<&V>;
@@ -179,7 +185,7 @@ macro_rules! impl_CursorRead {
 impl_CursorRead!(Cursor;; R: TreeReader<K, V>);
 impl_CursorRead!(CursorMut;; W: TreeWriter<K, V>);
 impl_CursorRead!(CursorAlloc; 'b;);
-
+/// Trait for cursors that can read the adjacent nodes.
 pub trait CursorPeek<K, V>: CursorMove + CursorRead<K, V> {
     fn peek_order<const I: usize>(&self) -> Option<(&K, &V)> where [(); 1 - I]:;
     fn peek_parent(&self) -> Option<(&K, &V)>;
@@ -236,7 +242,7 @@ macro_rules! impl_CursorPeek {
 impl_CursorPeek!(Cursor;; R: TreeReader<K, V>);
 impl_CursorPeek!(CursorMut;; W: TreeWriter<K, V>);
 impl_CursorPeek!(CursorAlloc; 'b;);
-
+/// Trait for cursors that can write to the current node.
 pub trait CursorWrite<K, V>: CursorRead<K, V> {
     fn value_mut(&mut self) -> Option<&mut V>;
 }

@@ -52,15 +52,18 @@ pub enum SearchResult<T> {
     RightOf(T)
 }
 impl<T> SearchResult<T> {
+    /// Returns `Some` when the result is a `Here`, return `None` otherwise.
     #[inline]
     pub fn into_here(self) -> Option<T> {
         let Self::Here(value) = self else { return None };
         Some(value)
     }
+    /// Returns true only when the result is a `Here`.
     #[inline(always)]
     pub fn is_here(&self) -> bool {
         matches!(self, Self::Here(_))
     }
+    /// Applies a function to the result, this does nothing for the `Empty` case.
     #[inline]
     pub fn map<R, F>(self, f: F) -> SearchResult<R>
         where F: FnOnce(T) -> R
@@ -80,7 +83,11 @@ pub(crate) struct Bounds {
     pub range: [NodeRef; 2],
     pub black_height: u8
 }
-
+/// Red-Black Tree data structure.
+///
+/// This provides in-order iteration in `O(N)` and split/join in `O(log(N))`.
+///
+/// Each node can hold data by implementing the [Value] trait.
 #[derive(Debug)]
 pub struct Tree<K: Ord, V: Value> {
     port: Port<Node<K, V>, Bounds>
